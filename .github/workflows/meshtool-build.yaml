@@ -1,0 +1,32 @@
+name: meshtool-build
+on:
+  push:
+
+jobs:
+  build-meshtool:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 1.24
+    - run: go vet -v ./...
+    - run: go test -v ./...
+    - run: CGO_ENABLED=0 go build -trimpath -o cmd/meshtool/meshtool ./cmd/meshtool
+    - run: docker build --tag gcr.io/bomsync-214520/meshtool:$GITHUB_SHA ./cmd/meshtool
+    - name: 'Setup Google Cloud Authentication'
+      uses: 'google-github-actions/auth@v1'
+      with:
+        workload_identity_provider: 'projects/508647401058/locations/global/workloadIdentityPools/ci-federation/providers/github-actions'
+        service_account: 'github-actions@row-major-ci.iam.gserviceaccount.com'
+    - name: 'Set up Cloud SDK'
+      uses: 'google-github-actions/setup-gcloud@v1'
+      with:
+        version: '>= 390.0.0'
+    - run: 'gcloud auth configure-docker gcr.io'
+    - run: docker push gcr.io/bomsync-214520/meshtool:$GITHUB_SHA

@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mesh-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mesh-controller
+  namespace: mesh-controller
+  labels:
+    app: mesh-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mesh-controller
+  template:
+    metadata:
+      labels:
+        app: mesh-controller
+    spec:
+      containers:
+      - name: controller
+        image: ahmedtd111/meshtool:latest
+        command:
+        - /meshtool
+        - controller
+        - --in-cluster=true
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - NET_BIND_SERVICE
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      dnsPolicy: Default
+      nodeSelector:
+        kubernetes.io/os: linux
+      priorityClassName: system-cluster-critical
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccountName: default
+      terminationGracePeriodSeconds: 30
