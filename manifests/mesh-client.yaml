@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mesh-client
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mesh-client
+  namespace: mesh-client
+  labels:
+    app: mesh-client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mesh-client
+  template:
+    metadata:
+      labels:
+        app: mesh-client
+    spec:
+      containers:
+      - name: client
+        # image: ahmedtd111/meshtool:latest
+        # command:
+        # - /meshtool
+        # - controller
+        # - --in-cluster=true
+        image: debian
+        command: ['sleep', 'infinity']
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - NET_BIND_SERVICE
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: mesh-creds
+          mountPath: /var/run/mesh-creds
+      volumes:
+      - name: mesh-creds
+        projected:
+          sources:
+          - podCertificate:
+              signerName: meshtool.row-major.net/main
+              keyType: ED25519
+              credentialBundlePath: creds.pem
+      dnsPolicy: Default
+      nodeSelector:
+        kubernetes.io/os: linux
+      priorityClassName: system-cluster-critical
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccountName: default
+      terminationGracePeriodSeconds: 30
