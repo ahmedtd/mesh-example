@@ -12,10 +12,11 @@ import (
 	"path"
 	"time"
 
+	"github.com/ahmedtd/mesh-example/lib/signers"
 	certsv1alpha1 "k8s.io/api/certificates/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/wait"
 	certinformersv1alpha1 "k8s.io/client-go/informers/certificates/v1alpha1"
 	"k8s.io/client-go/kubernetes"
@@ -31,8 +32,6 @@ import (
 type Controller struct {
 	clock clock.PassiveClock
 
-	signerName string
-
 	kc          kubernetes.Interface
 	pcrInformer cache.SharedIndexInformer
 	pcrQueue    workqueue.TypedRateLimitingInterface[string]
@@ -42,16 +41,14 @@ type Controller struct {
 }
 
 // New creates a new Controller.
-func New(clock clock.PassiveClock, signerName string, caKeys []crypto.PrivateKey, caCerts [][]byte, kc kubernetes.Interface) *Controller {
+func New(clock clock.PassiveClock, caKeys []crypto.PrivateKey, caCerts [][]byte, kc kubernetes.Interface) *Controller {
 	pcrInformer := certinformersv1alpha1.NewFilteredPodCertificateRequestInformer(kc, metav1.NamespaceAll, 24*time.Hour, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc},
 		func(opts *metav1.ListOptions) {
-			opts.FieldSelector = fields.OneTermEqualSelector("spec.signerName", signerName).String()
 		},
 	)
 
 	sc := &Controller{
 		clock:       clock,
-		signerName:  signerName,
 		kc:          kc,
 		pcrInformer: pcrInformer,
 		pcrQueue:    workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
@@ -138,7 +135,11 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 }
 
 func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1alpha1.PodCertificateRequest) error {
-	if pcr.Spec.SignerName != c.signerName {
+	switch pcr.Spec.SignerName {
+	case signers.SPIFFEMesh, signers.ServiceTLS, signers.PodIdentity:
+	default:
+		// Return nil, since we are not going to magically start supporting this
+		// signer name by retaining the cert in the workqueue.
 		return nil
 	}
 
@@ -171,21 +172,33 @@ func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1alpha1.PodCertif
 		lifetime = requestedLifetime
 	}
 
-	spiffeURI := &url.URL{
-		Scheme: "spiffe",
-		Host:   "cluster.local",
-		Path:   path.Join("ns", pcr.ObjectMeta.Namespace, "sa", pcr.Spec.ServiceAccountName),
-	}
-
 	notBefore := c.clock.Now().Add(-2 * time.Minute)
 	notAfter := notBefore.Add(lifetime)
 	beginRefreshAt := notAfter.Add(-30 * time.Minute)
+
 	template := &x509.Certificate{
-		URIs:        []*url.URL{spiffeURI},
-		NotBefore:   notBefore,
-		NotAfter:    notAfter,
-		KeyUsage:    x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+	}
+	switch pcr.Spec.SignerName {
+	case signers.SPIFFEMesh:
+		spiffeURI := &url.URL{
+			Scheme: "spiffe",
+			Host:   "cluster.local",
+			Path:   path.Join("ns", pcr.ObjectMeta.Namespace, "sa", pcr.Spec.ServiceAccountName),
+		}
+		template.URIs = []*url.URL{spiffeURI}
+	case signers.ServiceTLS:
+		if err := c.fillTemplateForServiceSigner(ctx, pcr, template); err != nil {
+			return fmt.Errorf("while filling template for service signer: %w", err)
+		}
+	case signers.PodIdentity:
+	default:
+		// Should have already returned nil at the beginning of this function.
+		return nil
 	}
 
 	signingCert, err := x509.ParseCertificate(c.caCerts[len(c.caCerts)-1])
@@ -237,6 +250,54 @@ func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1alpha1.PodCertif
 	if err != nil {
 		return fmt.Errorf("while updating PodCertificateRequest: %w", err)
 	}
+
+	return nil
+}
+
+func (c *Controller) fillTemplateForServiceSigner(ctx context.Context, pcr *certsv1alpha1.PodCertificateRequest, tpl *x509.Certificate) error {
+	// TODO: Switch from live reads to indexer
+
+	svcs, err := c.kc.CoreV1().Services(pcr.ObjectMeta.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("while listing services: %w", err)
+	}
+
+	// TODO: Looping over every service isn't great.  Maintain an index of pod
+	// to covering services.
+
+	dnsNames := []string{}
+	for _, svc := range svcs.Items {
+		switch svc.Spec.Type {
+		case corev1.ServiceTypeClusterIP, corev1.ServiceTypeNodePort, corev1.ServiceTypeLoadBalancer:
+			// ok
+		default:
+			// This service type doesn't select pods using a label selector.
+			continue
+		}
+
+		// Find the set of pods that the service selects.
+		matchedPods, err := c.kc.CoreV1().Pods(pcr.ObjectMeta.Namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: metav1.FormatLabelSelector(&metav1.LabelSelector{MatchLabels: svc.Spec.Selector}),
+		})
+		if err != nil {
+			return fmt.Errorf("while selecting pods for service %q: %w", pcr.ObjectMeta.Namespace+"/"+svc.ObjectMeta.Name, err)
+		}
+
+		for _, matchedPod := range matchedPods.Items {
+			if matchedPod.ObjectMeta.Name == pcr.Spec.PodName && matchedPod.ObjectMeta.UID == pcr.Spec.PodUID {
+				// TODO: I'm making some assumptions about the DNS names that
+				// resolve to a given Service.  I know at least one
+				// configuration that I suspect doesn't match these assumptions
+				// --- GKE with VPC-scoped Cloud DNS [1].
+				//
+				// [1] https://cloud.google.com/kubernetes-engine/docs/how-to/cloud-dns#vpc_scope_dns
+				name := fmt.Sprintf("%s.%s.svc", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace)
+				dnsNames = append(dnsNames, name)
+			}
+		}
+	}
+
+	tpl.DNSNames = dnsNames
 
 	return nil
 }

@@ -8,6 +8,16 @@ kind: ClusterRole
 metadata:
   name: meshtool-signer
 rules:
+# The service signer needs to be able to read services and pods.
+- apiGroups:
+  - ""
+  resources:
+  - services
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - certificates.k8s.io
   resources:

@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: service-tls-example
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: service-tls-example
+  labels:
+    app: server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+      - name: server
+        image: ahmedtd111/meshtool:latest
+        command:
+        - /meshtool
+        - vanilla-https-server
+        - --listen=0.0.0.0:443
+        - --server-creds=/var/run/server-tls-creds/creds.pem
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - NET_BIND_SERVICE
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: server-tls-creds
+          mountPath: /var/run/server-tls-creds
+      volumes:
+      - name: server-tls-creds
+        projected:
+          sources:
+          - podCertificate:
+              signerName: meshtool.row-major.net/service
+              keyType: ECDSAP256
+              credentialBundlePath: creds.pem
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: service-tls-example
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: 443
+  selector: {
+    app: server,
+  }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client
+  namespace: service-tls-example
+  labels:
+    app: client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: client
+  template:
+    metadata:
+      labels:
+        app: client
+    spec:
+      restartPolicy: Always
+      containers:
+      - name: client
+        image: ahmedtd111/meshtool:latest
+        command:
+        - /meshtool
+        - https-client
+        - --fetch-url=https://server.service-tls-example.svc/healthz
+        - --trust-bundle=/var/run/server-tls-trustbundle/trust.pem
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - NET_BIND_SERVICE
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: server-tls-trustbundle
+          mountPath: /var/run/server-tls-trustbundle
+      volumes:
+      - name: server-tls-trustbundle
+        projected:
+          sources:
+          - clusterTrustBundle:
+              signerName: meshtool.row-major.net/service
+              labelSelector:
+                matchLabels:
+                  "meshtool.row-major.net/trust-tag": "live"
+              path: trust.pem
