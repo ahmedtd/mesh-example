@@ -10,8 +10,11 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/ahmedtd/mesh-example/lib/meshpublisher"
-	"github.com/ahmedtd/mesh-example/lib/meshsigner"
+	"github.com/ahmedtd/mesh-example/lib/localca"
+	"github.com/ahmedtd/mesh-example/lib/podidentitysigner"
+	"github.com/ahmedtd/mesh-example/lib/servicednssigner"
+	"github.com/ahmedtd/mesh-example/lib/signercontroller"
+	"github.com/ahmedtd/mesh-example/lib/spiffesigner"
 	"github.com/google/subcommands"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -23,6 +26,16 @@ import (
 type MeshControllerCommand struct {
 	inCluster  bool
 	kubeConfig string
+
+	enableServiceDNSSigner bool
+	serviceDNSCAPoolFile   string
+
+	enableSPIFFESigner bool
+	spiffeTrustDomain  string
+	spiffeCAPoolFile   string
+
+	enablePodIdentitySigner bool
+	podIdentityCAPoolFile   string
 }
 
 var _ subcommands.Command = (*MeshControllerCommand)(nil)
@@ -47,6 +60,26 @@ func (c *MeshControllerCommand) SetFlags(f *flag.FlagSet) {
 
 	f.StringVar(&c.kubeConfig, "kubeconfig", kubeConfigDefault, "absolute path to the kubeconfig file")
 	f.BoolVar(&c.inCluster, "in-cluster", false, "Is the controller running in the cluster it should connect to?")
+
+	f.BoolVar(
+		&c.enableServiceDNSSigner,
+		"enable-service-dns-signer",
+		false,
+		fmt.Sprintf("Run controller for %s", servicednssigner.Name),
+	)
+	f.StringVar(
+		&c.serviceDNSCAPoolFile,
+		"service-dns-ca-pool",
+		"",
+		"File that contains the CA pool state for "+servicednssigner.Name,
+	)
+
+	f.BoolVar(&c.enableSPIFFESigner, "enable-spiffe-signer", false, fmt.Sprintf("Run controller for %s", spiffesigner.Name))
+	f.StringVar(&c.spiffeTrustDomain, "spiffe-trust-domain", "", "The SPIFFE trust domain for issued certificates")
+	f.StringVar(&c.spiffeCAPoolFile, "spiffe-ca-pool", "", fmt.Sprintf("File that contains the CA pool state for %s", spiffesigner.Name))
+
+	f.BoolVar(&c.enablePodIdentitySigner, "enable-pod-identity-signer", false, fmt.Sprintf("Run controller for %s", podidentitysigner.Name))
+	f.StringVar(&c.podIdentityCAPoolFile, "pod-identity-ca-pool", "", fmt.Sprintf("File that contains the CA pool state for %s", podidentitysigner.Name))
 }
 
 func (c *MeshControllerCommand) Execute(ctx context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
@@ -78,16 +111,45 @@ func (c *MeshControllerCommand) do(ctx context.Context) error {
 		return fmt.Errorf("while creating Kubernetes client: %w", err)
 	}
 
-	caKeys, caCerts, err := GenerateCAHierarchy(0)
-	if err != nil {
-		return fmt.Errorf("while generating CA hierarchy: %w", err)
+	if c.enableServiceDNSSigner {
+		serviceTLSCAPoolBytes, err := os.ReadFile(c.serviceDNSCAPoolFile)
+		if err != nil {
+			return fmt.Errorf("while reading Service DNS ca pool state: %w", err)
+		}
+
+		serviceTLSCAPool, err := localca.Unmarshal(serviceTLSCAPoolBytes)
+		if err != nil {
+			return fmt.Errorf("while unmarshaling Service DNS ca pool state: %w", err)
+		}
+
+		impl := servicednssigner.NewImpl(kc, serviceTLSCAPool)
+
+		controller := signercontroller.New(clock.RealClock{}, impl, kc)
+		go controller.Run(ctx)
 	}
 
-	controller := meshsigner.New(clock.RealClock{}, caKeys, caCerts, kc)
-	go controller.Run(ctx)
+	if c.enableSPIFFESigner {
+		if c.spiffeTrustDomain == "" {
+			return fmt.Errorf("--spiffe-trust-domain must be set")
+		}
 
-	publisher := meshpublisher.New(clock.RealClock{}, caCerts, kc)
-	go publisher.Run(ctx)
+		poolBytes, err := os.ReadFile(c.spiffeCAPoolFile)
+		if err != nil {
+			return fmt.Errorf("while reading SPIFFE ca pool state: %w", err)
+		}
+
+		caPool, err := localca.Unmarshal(poolBytes)
+		if err != nil {
+			return fmt.Errorf("while unmarshaling SPIFFE ca pool state: %w", err)
+		}
+
+		impl := spiffesigner.NewImpl(c.spiffeTrustDomain, caPool)
+
+		controller := signercontroller.New(clock.RealClock{}, impl, kc)
+		go controller.Run(ctx)
+	}
+
+	// TODO: Reload when the file changes.
 
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)

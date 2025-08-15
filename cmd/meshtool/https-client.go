@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
@@ -16,8 +17,11 @@ import (
 )
 
 type HTTPSClientCommand struct {
-	fetchURL    string
-	trustBundle string
+	fetchURL string
+
+	serverTrustBundleFile string
+
+	clientCredBundleFile string
 }
 
 var _ subcommands.Command = (*HTTPSClientCommand)(nil)
@@ -36,7 +40,14 @@ func (*HTTPSClientCommand) Usage() string {
 
 func (c *HTTPSClientCommand) SetFlags(f *flag.FlagSet) {
 	f.StringVar(&c.fetchURL, "fetch-url", "", "URL to poll")
-	f.StringVar(&c.trustBundle, "trust-bundle", "", "File with trust anchors to verify the server certificate")
+	f.StringVar(&c.serverTrustBundleFile, "server-trust-bundle", "", "File with trust anchors to verify the server certificate")
+
+	f.StringVar(
+		&c.clientCredBundleFile,
+		"client-cred-bundle",
+		"",
+		"File with client key and certificate chain",
+	)
 }
 
 func (c *HTTPSClientCommand) Execute(ctx context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
@@ -50,7 +61,7 @@ func (c *HTTPSClientCommand) Execute(ctx context.Context, f *flag.FlagSet, _ ...
 }
 
 func (c *HTTPSClientCommand) pollOnce(ctx context.Context) error {
-	trustBundlePEM, err := os.ReadFile(c.trustBundle)
+	trustBundlePEM, err := os.ReadFile(c.serverTrustBundleFile)
 	if err != nil {
 		return fmt.Errorf("while reading service trust bundle: %w", err)
 	}
@@ -58,11 +69,54 @@ func (c *HTTPSClientCommand) pollOnce(ctx context.Context) error {
 	serverTrustAnchors := x509.NewCertPool()
 	serverTrustAnchors.AppendCertsFromPEM(trustBundlePEM)
 
+	tlsConfig := &tls.Config{
+		RootCAs: serverTrustAnchors,
+	}
+
+	// Load and send client certificates if a bundle file was specified.
+	if c.clientCredBundleFile != "" {
+		bundlePEM, err := os.ReadFile(c.clientCredBundleFile)
+		if err != nil {
+			return fmt.Errorf("while reading client credential bundle: %w", err)
+		}
+
+		cert := tls.Certificate{}
+
+		var block *pem.Block
+		rest := bundlePEM
+		for {
+			block, rest = pem.Decode(rest)
+			if block == nil {
+				break
+			}
+
+			switch block.Type {
+			case "PRIVATE KEY":
+				cert.PrivateKey, err = x509.ParsePKCS8PrivateKey(block.Bytes)
+				if err != nil {
+					return fmt.Errorf("while parsing private key from credential bundle: %w", err)
+				}
+			case "CERTIFICATE":
+				cert.Certificate = append(cert.Certificate, block.Bytes)
+			}
+		}
+
+		if cert.PrivateKey == nil {
+			return fmt.Errorf("client credential bundle had no private key")
+		}
+
+		if len(cert.Certificate) == 0 {
+			return fmt.Errorf("client credential bundle had no certificates")
+		}
+
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	// TODO: Support the server presenting pod identity or spiffe certificates.
+
 	client := &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs: serverTrustAnchors,
-			},
+			TLSClientConfig: tlsConfig,
 		},
 	}
 

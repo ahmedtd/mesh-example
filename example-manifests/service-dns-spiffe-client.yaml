@@ -1,13 +1,17 @@
+# This namespace contains a demo server that presents a server certificate
+# issued by row-major.net/service-dns, and a client that presents a
+# client certificate issued by row-major.net/spiffe.
+
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: service-tls-example
+  name: service-dns-spiffe-client
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: server
-  namespace: service-tls-example
+  namespace: service-dns-spiffe-client
   labels:
     app: server
 spec:
@@ -25,9 +29,11 @@ spec:
         image: ahmedtd111/meshtool:latest
         command:
         - /meshtool
-        - vanilla-https-server
+        - demo-server
         - --listen=0.0.0.0:443
-        - --server-creds=/var/run/server-tls-creds/creds.pem
+        - --server-creds=/run/tls-config/service-dns-cred-bundle.pem
+        - --enable-spiffe-client-support=true
+        - --spiffe-trust-bundle=/run/tls-config/spiffe-trust-bundle.pem
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
@@ -38,23 +44,29 @@ spec:
             - ALL
           readOnlyRootFilesystem: true
         volumeMounts:
-        - name: server-tls-creds
-          mountPath: /var/run/server-tls-creds
+        - name: tls-config
+          mountPath: /run/tls-config
       volumes:
-      - name: server-tls-creds
+      - name: tls-config
         projected:
           sources:
           - podCertificate:
-              signerName: meshtool.row-major.net/service
+              signerName: row-major.net/service-dns
               keyType: ECDSAP256
-              credentialBundlePath: creds.pem
+              credentialBundlePath: service-dns-cred-bundle.pem
+          - clusterTrustBundle:
+              signerName: row-major.net/spiffe
+              labelSelector:
+                matchLabels:
+                  "row-major.net/trust-tag": "live"
+              path: spiffe-trust-bundle.pem
       restartPolicy: Always
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: server
-  namespace: service-tls-example
+  namespace: service-dns-spiffe-client
 spec:
   type: ClusterIP
   ports:
@@ -68,7 +80,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: client
-  namespace: service-tls-example
+  namespace: service-dns-spiffe-client
   labels:
     app: client
 spec:
@@ -88,8 +100,9 @@ spec:
         command:
         - /meshtool
         - https-client
-        - --fetch-url=https://server.service-tls-example.svc/healthz
-        - --trust-bundle=/var/run/server-tls-trustbundle/trust.pem
+        - --fetch-url=https://server.service-dns-spiffe-client.svc/spiffe-echo
+        - --server-trust-bundle=/run/tls-config/service-dns-trust-bundle.pem
+        - --client-cred-bundle=/run/tls-config/spiffe-cred-bundle.pem
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
@@ -100,15 +113,19 @@ spec:
             - ALL
           readOnlyRootFilesystem: true
         volumeMounts:
-        - name: server-tls-trustbundle
-          mountPath: /var/run/server-tls-trustbundle
+        - name: tls-config
+          mountPath: /run/tls-config
       volumes:
-      - name: server-tls-trustbundle
+      - name: tls-config
         projected:
           sources:
           - clusterTrustBundle:
-              signerName: meshtool.row-major.net/service
+              signerName: row-major.net/service-dns
               labelSelector:
                 matchLabels:
-                  "meshtool.row-major.net/trust-tag": "live"
-              path: trust.pem
+                  "row-major.net/trust-tag": "live"
+              path: service-dns-trust-bundle.pem
+          - podCertificate:
+              signerName: row-major.net/spiffe
+              keyType: ED25519
+              credentialBundlePath: spiffe-cred-bundle.pem

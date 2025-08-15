@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: service-dns-unauth-client
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: service-dns-unauth-client
+  labels:
+    app: server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+      - name: server
+        image: ahmedtd111/meshtool:latest
+        command:
+        - /meshtool
+        - demo-server
+        - --listen=0.0.0.0:443
+        - --server-creds=/var/run/service-tls-creds/creds.pem
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - NET_BIND_SERVICE
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: service-tls-creds
+          mountPath: /var/run/service-tls-creds
+      volumes:
+      - name: service-tls-creds
+        projected:
+          sources:
+          - podCertificate:
+              signerName: row-major.net/service-dns
+              keyType: ECDSAP256
+              credentialBundlePath: creds.pem
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: service-dns-unauth-client
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: 443
+  selector: {
+    app: server,
+  }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client
+  namespace: service-dns-unauth-client
+  labels:
+    app: client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: client
+  template:
+    metadata:
+      labels:
+        app: client
+    spec:
+      restartPolicy: Always
+      containers:
+      - name: client
+        image: ahmedtd111/meshtool:latest
+        command:
+        - /meshtool
+        - https-client
+        - --fetch-url=https://server.service-dns-unauth-client.svc/healthz
+        - --server-trust-bundle=/var/run/service-dns-trustbundle/trust.pem
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - NET_BIND_SERVICE
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: service-dns-trustbundle
+          mountPath: /var/run/service-dns-trustbundle
+      volumes:
+      - name: service-dns-trustbundle
+        projected:
+          sources:
+          - clusterTrustBundle:
+              signerName: row-major.net/service-dns
+              labelSelector:
+                matchLabels:
+                  "row-major.net/trust-tag": "live"
+              path: trust.pem

@@ -48,7 +48,7 @@ rules:
   resources:
   - signers
   resourceNames:
-  - meshtool.row-major.net/*
+  - row-major.net/*
   verbs:
   - sign
   - attest
@@ -90,6 +90,17 @@ spec:
         - /meshtool
         - controller
         - --in-cluster=true
+        - --enable-service-dns-signer=true
+        - --service-dns-ca-pool=/run/ca-state/service-dns-pool.json
+        - --enable-spiffe-signer=true
+        - --spiffe-trust-domain=cluster.local
+        - --spiffe-ca-pool=/run/ca-state/spiffe-pool.json
+        volumeMounts: [
+          {
+            name: "ca-state",
+            mountPath: "/run/ca-state",
+          }
+        ]
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
@@ -99,6 +110,20 @@ spec:
             drop:
             - ALL
           readOnlyRootFilesystem: true
+      volumes:
+      - name: "ca-state"
+        projected:
+          sources:
+          - secret:
+              name: "service-dns-ca-pool"
+              items: 
+              - key: "pool"
+                path: "service-dns-pool.json"
+          - secret:
+              name: "spiffe-ca-pool"
+              items:
+              - key: "pool"
+                path: "spiffe-pool.json"
       dnsPolicy: Default
       nodeSelector:
         kubernetes.io/os: linux

@@ -1,20 +1,18 @@
-package meshsigner
+package signercontroller
 
 import (
 	"bytes"
 	"context"
-	"crypto"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"net/url"
-	"path"
 	"time"
 
-	"github.com/ahmedtd/mesh-example/lib/signers"
+	"github.com/ahmedtd/mesh-example/lib/localca"
 	certsv1alpha1 "k8s.io/api/certificates/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
+	certsv1beta1 "k8s.io/api/certificates/v1beta1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -28,6 +26,13 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+type SignerImpl interface {
+	SignerName() string
+	DesiredClusterTrustBundles() []*certsv1beta1.ClusterTrustBundle
+	CAPool() *localca.Pool
+	MakeCert(context.Context, time.Time, time.Time, *certsv1alpha1.PodCertificateRequest) (*x509.Certificate, error)
+}
+
 // Controller is an in-memory signing controller for PodCertificateRequests.
 type Controller struct {
 	clock clock.PassiveClock
@@ -36,12 +41,11 @@ type Controller struct {
 	pcrInformer cache.SharedIndexInformer
 	pcrQueue    workqueue.TypedRateLimitingInterface[string]
 
-	caKeys  []crypto.PrivateKey
-	caCerts [][]byte
+	handler SignerImpl
 }
 
 // New creates a new Controller.
-func New(clock clock.PassiveClock, caKeys []crypto.PrivateKey, caCerts [][]byte, kc kubernetes.Interface) *Controller {
+func New(clock clock.PassiveClock, handler SignerImpl, kc kubernetes.Interface) *Controller {
 	pcrInformer := certinformersv1alpha1.NewFilteredPodCertificateRequestInformer(kc, metav1.NamespaceAll, 24*time.Hour, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc},
 		func(opts *metav1.ListOptions) {
 		},
@@ -52,8 +56,7 @@ func New(clock clock.PassiveClock, caKeys []crypto.PrivateKey, caCerts [][]byte,
 		kc:          kc,
 		pcrInformer: pcrInformer,
 		pcrQueue:    workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
-		caKeys:      caKeys,
-		caCerts:     caCerts,
+		handler:     handler,
 	}
 
 	sc.pcrInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -91,6 +94,7 @@ func (c *Controller) Run(ctx context.Context) {
 	}
 
 	go wait.UntilWithContext(ctx, c.runWorker, time.Second)
+	go wait.JitterUntilWithContext(ctx, c.ensureBundle, 1*time.Minute, 1.0, true)
 	<-ctx.Done()
 }
 
@@ -135,9 +139,7 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 }
 
 func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1alpha1.PodCertificateRequest) error {
-	switch pcr.Spec.SignerName {
-	case signers.SPIFFEMesh, signers.ServiceTLS, signers.PodIdentity:
-	default:
+	if pcr.Spec.SignerName != c.handler.SignerName() {
 		// Return nil, since we are not going to magically start supporting this
 		// signer name by retaining the cert in the workqueue.
 		return nil
@@ -176,37 +178,18 @@ func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1alpha1.PodCertif
 	notAfter := notBefore.Add(lifetime)
 	beginRefreshAt := notAfter.Add(-30 * time.Minute)
 
-	template := &x509.Certificate{
-		BasicConstraintsValid: true,
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-	}
-	switch pcr.Spec.SignerName {
-	case signers.SPIFFEMesh:
-		spiffeURI := &url.URL{
-			Scheme: "spiffe",
-			Host:   "cluster.local",
-			Path:   path.Join("ns", pcr.ObjectMeta.Namespace, "sa", pcr.Spec.ServiceAccountName),
-		}
-		template.URIs = []*url.URL{spiffeURI}
-	case signers.ServiceTLS:
-		if err := c.fillTemplateForServiceSigner(ctx, pcr, template); err != nil {
-			return fmt.Errorf("while filling template for service signer: %w", err)
-		}
-	case signers.PodIdentity:
-	default:
-		// Should have already returned nil at the beginning of this function.
-		return nil
-	}
-
-	signingCert, err := x509.ParseCertificate(c.caCerts[len(c.caCerts)-1])
+	template, err := c.handler.MakeCert(ctx, notBefore, notAfter, pcr)
 	if err != nil {
-		return fmt.Errorf("while parsing signing certificate: %w", err)
+		return fmt.Errorf("while converting PodCertificateRequest to x509.Certificate: %w", err)
 	}
 
-	subjectCertDER, err := x509.CreateCertificate(rand.Reader, template, signingCert, subjectPublicKey, c.caKeys[len(c.caKeys)-1])
+	caPool := c.handler.CAPool()
+
+	if len(caPool.CAs) == 0 {
+		return fmt.Errorf("service TLS signing pool has no CAs")
+	}
+
+	subjectCertDER, err := x509.CreateCertificate(rand.Reader, template, caPool.CAs[0].RootCertificate, subjectPublicKey, caPool.CAs[0].SigningKey)
 	if err != nil {
 		return fmt.Errorf("while signing subject cert: %w", err)
 	}
@@ -220,10 +203,11 @@ func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1alpha1.PodCertif
 	if err != nil {
 		return fmt.Errorf("while encoding leaf certificate to PEM: %w", err)
 	}
-	for i := 0; i < len(c.caCerts)-1; i++ {
+
+	for i := 0; i < len(caPool.CAs[0].IntermediateCertificates); i++ {
 		err = pem.Encode(chainPEM, &pem.Block{
 			Type:  "CERTIFICATE",
-			Bytes: c.caCerts[len(c.caCerts)-1-i],
+			Bytes: caPool.CAs[0].IntermediateCertificates[i].Raw,
 		})
 		if err != nil {
 			return fmt.Errorf("while encoding intermediate certificate to PEM: %w", err)
@@ -254,50 +238,34 @@ func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1alpha1.PodCertif
 	return nil
 }
 
-func (c *Controller) fillTemplateForServiceSigner(ctx context.Context, pcr *certsv1alpha1.PodCertificateRequest, tpl *x509.Certificate) error {
-	// TODO: Switch from live reads to indexer
+func (c *Controller) ensureBundle(ctx context.Context) {
+	wantCTBs := c.handler.DesiredClusterTrustBundles()
 
-	svcs, err := c.kc.CoreV1().Services(pcr.ObjectMeta.Namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return fmt.Errorf("while listing services: %w", err)
-	}
-
-	// TODO: Looping over every service isn't great.  Maintain an index of pod
-	// to covering services.
-
-	dnsNames := []string{}
-	for _, svc := range svcs.Items {
-		switch svc.Spec.Type {
-		case corev1.ServiceTypeClusterIP, corev1.ServiceTypeNodePort, corev1.ServiceTypeLoadBalancer:
-			// ok
-		default:
-			// This service type doesn't select pods using a label selector.
-			continue
-		}
-
-		// Find the set of pods that the service selects.
-		matchedPods, err := c.kc.CoreV1().Pods(pcr.ObjectMeta.Namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: metav1.FormatLabelSelector(&metav1.LabelSelector{MatchLabels: svc.Spec.Selector}),
-		})
-		if err != nil {
-			return fmt.Errorf("while selecting pods for service %q: %w", pcr.ObjectMeta.Namespace+"/"+svc.ObjectMeta.Name, err)
-		}
-
-		for _, matchedPod := range matchedPods.Items {
-			if matchedPod.ObjectMeta.Name == pcr.Spec.PodName && matchedPod.ObjectMeta.UID == pcr.Spec.PodUID {
-				// TODO: I'm making some assumptions about the DNS names that
-				// resolve to a given Service.  I know at least one
-				// configuration that I suspect doesn't match these assumptions
-				// --- GKE with VPC-scoped Cloud DNS [1].
-				//
-				// [1] https://cloud.google.com/kubernetes-engine/docs/how-to/cloud-dns#vpc_scope_dns
-				name := fmt.Sprintf("%s.%s.svc", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace)
-				dnsNames = append(dnsNames, name)
+	for _, wantCTB := range wantCTBs {
+		ctb, err := c.kc.CertificatesV1beta1().ClusterTrustBundles().Get(ctx, wantCTB.ObjectMeta.Name, metav1.GetOptions{})
+		if k8serrors.IsNotFound(err) {
+			_, err = c.kc.CertificatesV1beta1().ClusterTrustBundles().Create(ctx, wantCTB, metav1.CreateOptions{})
+			if err != nil {
+				klog.ErrorS(err, "while creating ClusterTrustBundle", "key", wantCTB.ObjectMeta.Name)
+				return
 			}
+			return
+		} else if err != nil {
+			klog.ErrorS(err, "while getting ClusterTrustBundle", "key", wantCTB.ObjectMeta.Name)
+			return
+		}
+
+		if apiequality.Semantic.DeepEqual(wantCTB.Labels, ctb.Labels) && apiequality.Semantic.DeepEqual(wantCTB.Spec, ctb.Spec) {
+			klog.InfoS("ClusterTrustBundle already in correct state", "key", wantCTB.ObjectMeta.Name)
+		}
+
+		ctb = ctb.DeepCopy()
+		ctb.ObjectMeta.Labels = wantCTB.Labels
+		ctb.Spec.TrustBundle = wantCTB.Spec.TrustBundle
+
+		_, err = c.kc.CertificatesV1beta1().ClusterTrustBundles().Update(ctx, ctb, metav1.UpdateOptions{})
+		if err != nil {
+			klog.ErrorS(err, "while updating ClusterTrustBundle", "key", wantCTB.ObjectMeta.Name)
 		}
 	}
-
-	tpl.DNSNames = dnsNames
-
-	return nil
 }
