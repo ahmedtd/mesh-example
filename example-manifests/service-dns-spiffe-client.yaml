@@ -26,7 +26,7 @@ spec:
     spec:
       containers:
       - name: server
-        image: ahmedtd111/meshtool:latest
+        image: ghcr.io/ahmedtd/meshtool:latest
         command:
         - /meshtool
         - demo-server
@@ -96,7 +96,7 @@ spec:
       restartPolicy: Always
       containers:
       - name: client
-        image: ahmedtd111/meshtool:latest
+        image: ghcr.io/ahmedtd/meshtool:latest
         command:
         - /meshtool
         - https-client
