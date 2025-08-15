@@ -110,5 +110,5 @@ spec:
               signerName: row-major.net/service-dns
               labelSelector:
                 matchLabels:
-                  "row-major.net/trust-tag": "live"
+                  "row-major.net/service-dns/canarying": "live"
               path: trust.pem

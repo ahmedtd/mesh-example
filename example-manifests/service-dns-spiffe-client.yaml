@@ -58,7 +58,8 @@ spec:
               signerName: row-major.net/spiffe
               labelSelector:
                 matchLabels:
-                  "row-major.net/trust-tag": "live"
+                  "row-major.net/spiffe/canarying": "live"
+                  "row-major.net/spiffe/trust-domain": "cluster.local"
               path: spiffe-trust-bundle.pem
       restartPolicy: Always
 ---
@@ -123,7 +124,7 @@ spec:
               signerName: row-major.net/service-dns
               labelSelector:
                 matchLabels:
-                  "row-major.net/trust-tag": "live"
+                  "row-major.net/service-dns/canarying": "live"
               path: service-dns-trust-bundle.pem
           - podCertificate:
               signerName: row-major.net/spiffe
