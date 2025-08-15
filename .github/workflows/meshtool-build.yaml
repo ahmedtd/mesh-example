@@ -1,11 +1,24 @@
+# Adapted from:
+# https://docs.github.com/en/packages/managing-github-packages-using-github-actions-workflows/publishing-and-installing-a-package-with-github-actions#upgrading-a-workflow-that-accesses-a-registry-using-a-personal-access-token
+
 name: meshtool-build
 on:
   push:
+    branches:
+      - main
+      - seed
+    tags:
+      - v*
+  pull_request:
+
+env:
+  IMAGE_NAME: meshtool
 
 jobs:
   build-meshtool:
     runs-on: ubuntu-latest
     permissions:
+      packages: 'write'
       contents: 'read'
       id-token: 'write'
     steps:
@@ -18,15 +31,20 @@ jobs:
     - run: go vet -v ./...
     - run: go test -v ./...
     - run: CGO_ENABLED=0 go build -trimpath -o cmd/meshtool/meshtool ./cmd/meshtool
-    - run: docker build --tag gcr.io/bomsync-214520/meshtool:$GITHUB_SHA ./cmd/meshtool
-    - name: 'Setup Google Cloud Authentication'
-      uses: 'google-github-actions/auth@v1'
-      with:
-        workload_identity_provider: 'projects/508647401058/locations/global/workloadIdentityPools/ci-federation/providers/github-actions'
-        service_account: 'github-actions@row-major-ci.iam.gserviceaccount.com'
-    - name: 'Set up Cloud SDK'
-      uses: 'google-github-actions/setup-gcloud@v1'
-      with:
-        version: '>= 390.0.0'
-    - run: 'gcloud auth configure-docker gcr.io'
-    - run: docker push gcr.io/bomsync-214520/meshtool:$GITHUB_SHA
+    - run: docker build . --file ./cmd/meshtool/Dockerfile --tag $IMAGE_NAME --label "runnumber=${GITHUB_RUN_ID}"
+    - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+    - run: docker push ghcr.io/ahmedtd/meshtool:$GITHUB_SHA
+    - name: Push image
+      run: |
+          IMAGE_ID=ghcr.io/${{ github.repository_owner }}/$IMAGE_NAME
+          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+
+          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
+
+          [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION=$(echo $VERSION | sed -e 's/^v//')
+
+          [ "$VERSION" == "main" ] && VERSION=latest
+          echo IMAGE_ID=$IMAGE_ID
+          echo VERSION=$VERSION
+          docker tag $IMAGE_NAME $IMAGE_ID:$VERSION
+          docker push $IMAGE_ID:$VERSION
