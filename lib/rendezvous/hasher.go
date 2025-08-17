@@ -15,6 +15,7 @@ import (
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,7 +36,7 @@ var (
 	leaseRenewalPeriod = 10 * time.Second
 )
 
-var NotAssignedError = errors.New("item not assigned to this replica")
+var ErrNotAssigned = errors.New("item not assigned to this replica")
 
 // Hasher is a rendezvous hashing implementation built on top of Kubernetes
 // leases.
@@ -157,16 +158,33 @@ func (h *Hasher) ensureLease(ctx context.Context) error {
 		},
 		Spec: coordinationv1.LeaseSpec{
 			HolderIdentity:       &h.replicaName,
-			LeaseDurationSeconds: ptr.To[int32](int32(int64(leaseDuration) / 1_000_000_000)),
+			LeaseDurationSeconds: ptr.To(int32(int64(leaseDuration) / 1_000_000_000)),
 			AcquireTime:          ptr.To(metav1.NewMicroTime(now)),
 			RenewTime:            ptr.To(metav1.NewMicroTime(now)),
 			LeaseTransitions:     ptr.To[int32](1),
 		},
 	}
 
-	_, err := h.kc.CoordinationV1().Leases(h.leaseNamespace).Update(ctx, desiredLease, metav1.UpdateOptions{})
+	lease, err := h.kc.CoordinationV1().Leases(h.leaseNamespace).Get(ctx, h.replicaName, metav1.GetOptions{})
+	if k8serrors.IsNotFound(err) {
+		_, err = h.kc.CoordinationV1().Leases(h.leaseNamespace).Create(ctx, desiredLease, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("while creating lease: %w", err)
+		}
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("while getting lease: %w", err)
+	}
+
+	lease.ObjectMeta.Labels = desiredLease.Labels
+	lease.ObjectMeta.OwnerReferences = desiredLease.OwnerReferences
+	lease.Spec.HolderIdentity = desiredLease.Spec.HolderIdentity
+	lease.Spec.LeaseDurationSeconds = desiredLease.Spec.LeaseDurationSeconds
+	lease.Spec.RenewTime = desiredLease.Spec.RenewTime
+
+	_, err = h.kc.CoordinationV1().Leases(h.leaseNamespace).Update(ctx, lease, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("while upserting Lease: %w", err)
+		return fmt.Errorf("while updating lease: %w", err)
 	}
 
 	return nil

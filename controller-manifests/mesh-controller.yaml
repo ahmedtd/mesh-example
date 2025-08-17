@@ -66,6 +66,38 @@ subjects:
   namespace: mesh-controller
   name: default
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: mesh-controller
+  name: meshtool-controller
+rules:
+- apiGroups:
+  - "coordination.k8s.io"
+  resources:
+  - "leases"
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: meshtool-is-a-meshtool-controller
+  namespace: mesh-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: meshtool-controller
+subjects:
+- kind: ServiceAccount
+  namespace: mesh-controller
+  name: default
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -90,11 +122,28 @@ spec:
         - /meshtool
         - controller
         - --in-cluster=true
+        - --sharding-pod-namespace=$(POD_NAMESPACE)
+        - --sharding-pod-name=$(POD_NAME)
+        - --sharding-pod-uid=$(POD_UID)
+        - --sharding-application-name=mesh-controller
         - --enable-service-dns-signer=true
         - --service-dns-ca-pool=/run/ca-state/service-dns-pool.json
         - --enable-spiffe-signer=true
         - --spiffe-trust-domain=cluster.local
         - --spiffe-ca-pool=/run/ca-state/spiffe-pool.json
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
         volumeMounts: [
           {
             name: "ca-state",

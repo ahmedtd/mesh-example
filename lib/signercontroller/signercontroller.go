@@ -134,7 +134,7 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 	}
 
 	err = c.handlePCR(ctx, pcr)
-	if errors.Is(err, rendezvous.NotAssignedError) {
+	if errors.Is(err, rendezvous.ErrNotAssigned) {
 		klog.InfoS("Ignoring PCR because it is not assigned to this replica", "key", key)
 		c.pcrQueue.AddRateLimited(key)
 	}
@@ -164,7 +164,7 @@ func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1alpha1.PodCertif
 	}
 
 	if !c.hasher.AssignedToThisReplica(ctx, pcr.ObjectMeta.Namespace+"/"+pcr.ObjectMeta.Name) {
-		return rendezvous.NotAssignedError
+		return rendezvous.ErrNotAssigned
 	}
 
 	lifetime := 24 * time.Hour
