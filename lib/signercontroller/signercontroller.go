@@ -3,13 +3,11 @@ package signercontroller
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
 	"time"
 
-	"github.com/ahmedtd/mesh-example/lib/localca"
 	certsv1alpha1 "k8s.io/api/certificates/v1alpha1"
 	certsv1beta1 "k8s.io/api/certificates/v1beta1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -29,8 +27,7 @@ import (
 type SignerImpl interface {
 	SignerName() string
 	DesiredClusterTrustBundles() []*certsv1beta1.ClusterTrustBundle
-	CAPool() *localca.Pool
-	MakeCert(context.Context, time.Time, time.Time, *certsv1alpha1.PodCertificateRequest) (*x509.Certificate, error)
+	MakeCert(context.Context, time.Time, time.Time, *certsv1alpha1.PodCertificateRequest) ([]*x509.Certificate, error)
 }
 
 // Controller is an in-memory signing controller for PodCertificateRequests.
@@ -148,25 +145,10 @@ func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1alpha1.PodCertif
 	// PodCertificateRequests don't have an approval stage, and the node
 	// restriction / isolation check is handled by kube-apiserver.
 
-	// If our signer had a policy about which pods are allowed to request
-	// certificates, it would be implemented here.
-
-	// Proceed to signing.  Our toy signer will make a SPIFFE cert encoding the
-	// namespace and name of the pod's service account.
-
 	// Is the PCR already signed?
 	if pcr.Status.CertificateChain != "" {
 		return nil
 	}
-
-	subjectPublicKey, err := x509.ParsePKIXPublicKey(pcr.Spec.PKIXPublicKey)
-	if err != nil {
-		return fmt.Errorf("while parsing subject public key: %w", err)
-	}
-
-	// If our signer had an opinion on which key types were allowable, it would
-	// check subjectPublicKey, and deny the PCR with a SuggestedKeyType
-	// condition on it.
 
 	lifetime := 24 * time.Hour
 	requestedLifetime := time.Duration(*pcr.Spec.MaxExpirationSeconds) * time.Second
@@ -178,39 +160,19 @@ func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1alpha1.PodCertif
 	notAfter := notBefore.Add(lifetime)
 	beginRefreshAt := notAfter.Add(-30 * time.Minute)
 
-	template, err := c.handler.MakeCert(ctx, notBefore, notAfter, pcr)
+	chain, err := c.handler.MakeCert(ctx, notBefore, notAfter, pcr)
 	if err != nil {
-		return fmt.Errorf("while converting PodCertificateRequest to x509.Certificate: %w", err)
+		return fmt.Errorf("while converting PodCertificateRequest to x509.Certificate chain: %w", err)
 	}
 
-	caPool := c.handler.CAPool()
-
-	if len(caPool.CAs) == 0 {
-		return fmt.Errorf("service TLS signing pool has no CAs")
-	}
-
-	subjectCertDER, err := x509.CreateCertificate(rand.Reader, template, caPool.CAs[0].RootCertificate, subjectPublicKey, caPool.CAs[0].SigningKey)
-	if err != nil {
-		return fmt.Errorf("while signing subject cert: %w", err)
-	}
-
-	// Compose the certificate chain
 	chainPEM := &bytes.Buffer{}
-	err = pem.Encode(chainPEM, &pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: subjectCertDER,
-	})
-	if err != nil {
-		return fmt.Errorf("while encoding leaf certificate to PEM: %w", err)
-	}
-
-	for i := 0; i < len(caPool.CAs[0].IntermediateCertificates); i++ {
+	for _, cert := range chain {
 		err = pem.Encode(chainPEM, &pem.Block{
 			Type:  "CERTIFICATE",
-			Bytes: caPool.CAs[0].IntermediateCertificates[i].Raw,
+			Bytes: cert.Raw,
 		})
 		if err != nil {
-			return fmt.Errorf("while encoding intermediate certificate to PEM: %w", err)
+			return fmt.Errorf("while encoding certificate to PEM: %w", err)
 		}
 	}
 

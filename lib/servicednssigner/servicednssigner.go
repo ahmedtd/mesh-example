@@ -3,6 +3,7 @@ package servicednssigner
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -73,8 +74,11 @@ func (h *Impl) CAPool() *localca.Pool {
 	return h.caPool
 }
 
-func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1alpha1.PodCertificateRequest) (*x509.Certificate, error) {
+func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1alpha1.PodCertificateRequest) ([]*x509.Certificate, error) {
 	// TODO: Switch from live reads to indexer
+
+	// If our signer had a policy about which pods are allowed to request
+	// certificates, it would be implemented here.
 
 	svcs, err := h.kc.CoreV1().Services(pcr.ObjectMeta.Namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -118,12 +122,36 @@ func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr 
 
 	// TODO: Encode the OIDC issuer of the cluster into the certificate.
 
-	return &x509.Certificate{
+	subjectPublicKey, err := x509.ParsePKIXPublicKey(pcr.Spec.PKIXPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("while parsing subject public key: %w", err)
+	}
+
+	// If our signer had an opinion on which key types were allowable, it would
+	// check subjectPublicKey, and deny the PCR with a SuggestedKeyType
+	// condition on it.
+
+	template := &x509.Certificate{
 		BasicConstraintsValid: true,
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
 		DNSNames:              dnsNames,
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-	}, nil
+	}
+
+	subjectCertDER, err := x509.CreateCertificate(rand.Reader, template, h.caPool.CAs[0].RootCertificate, subjectPublicKey, h.caPool.CAs[0].SigningKey)
+	if err != nil {
+		return nil, fmt.Errorf("while signing subject cert: %w", err)
+	}
+
+	leafCert, err := x509.ParseCertificate(subjectCertDER)
+	if err != nil {
+		return nil, fmt.Errorf("while parsing leaf cert: %w", err)
+	}
+
+	ret := []*x509.Certificate{leafCert}
+	ret = append(ret, h.caPool.CAs[0].IntermediateCertificates...)
+
+	return ret, nil
 }

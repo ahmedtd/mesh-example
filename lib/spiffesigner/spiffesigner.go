@@ -3,8 +3,10 @@ package spiffesigner
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"net/url"
 	"path"
 	"time"
@@ -75,19 +77,39 @@ func (h *Impl) CAPool() *localca.Pool {
 	return h.caPool
 }
 
-func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1alpha1.PodCertificateRequest) (*x509.Certificate, error) {
+func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1alpha1.PodCertificateRequest) ([]*x509.Certificate, error) {
 	spiffeURI := &url.URL{
 		Scheme: "spiffe",
 		Host:   h.spiffeTrustDomain,
 		Path:   path.Join("ns", pcr.ObjectMeta.Namespace, "sa", pcr.Spec.ServiceAccountName),
 	}
 
-	return &x509.Certificate{
+	template := &x509.Certificate{
 		BasicConstraintsValid: true,
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
 		URIs:                  []*url.URL{spiffeURI},
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-	}, nil
+	}
+
+	subjectPublicKey, err := x509.ParsePKIXPublicKey(pcr.Spec.PKIXPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("while parsing subject public key: %w", err)
+	}
+
+	subjectCertDER, err := x509.CreateCertificate(rand.Reader, template, h.caPool.CAs[0].RootCertificate, subjectPublicKey, h.caPool.CAs[0].SigningKey)
+	if err != nil {
+		return nil, fmt.Errorf("while signing subject cert: %w", err)
+	}
+
+	leafCert, err := x509.ParseCertificate(subjectCertDER)
+	if err != nil {
+		return nil, fmt.Errorf("while parsing leaf cert: %w", err)
+	}
+
+	ret := []*x509.Certificate{leafCert}
+	ret = append(ret, h.caPool.CAs[0].IntermediateCertificates...)
+
+	return ret, nil
 }
