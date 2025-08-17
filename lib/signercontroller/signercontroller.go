@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/ahmedtd/mesh-example/lib/rendezvous"
 	certsv1alpha1 "k8s.io/api/certificates/v1alpha1"
 	certsv1beta1 "k8s.io/api/certificates/v1beta1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -30,6 +32,10 @@ type SignerImpl interface {
 	MakeCert(context.Context, time.Time, time.Time, *certsv1alpha1.PodCertificateRequest) ([]*x509.Certificate, error)
 }
 
+type Hasher interface {
+	AssignedToThisReplica(ctx context.Context, item string) bool
+}
+
 // Controller is an in-memory signing controller for PodCertificateRequests.
 type Controller struct {
 	clock clock.PassiveClock
@@ -38,11 +44,13 @@ type Controller struct {
 	pcrInformer cache.SharedIndexInformer
 	pcrQueue    workqueue.TypedRateLimitingInterface[string]
 
+	hasher Hasher
+
 	handler SignerImpl
 }
 
 // New creates a new Controller.
-func New(clock clock.PassiveClock, handler SignerImpl, kc kubernetes.Interface) *Controller {
+func New(clock clock.PassiveClock, handler SignerImpl, kc kubernetes.Interface, hasher Hasher) *Controller {
 	pcrInformer := certinformersv1alpha1.NewFilteredPodCertificateRequestInformer(kc, metav1.NamespaceAll, 24*time.Hour, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc},
 		func(opts *metav1.ListOptions) {
 		},
@@ -54,6 +62,7 @@ func New(clock clock.PassiveClock, handler SignerImpl, kc kubernetes.Interface) 
 		pcrInformer: pcrInformer,
 		pcrQueue:    workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
 		handler:     handler,
+		hasher:      hasher,
 	}
 
 	sc.pcrInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -125,6 +134,10 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 	}
 
 	err = c.handlePCR(ctx, pcr)
+	if errors.Is(err, rendezvous.NotAssignedError) {
+		klog.InfoS("Ignoring PCR because it is not assigned to this replica", "key", key)
+		c.pcrQueue.AddRateLimited(key)
+	}
 	if err != nil {
 		klog.ErrorS(err, "Error while handling PodCertificateRequest", "key", key)
 		c.pcrQueue.AddRateLimited(key)
@@ -148,6 +161,10 @@ func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1alpha1.PodCertif
 	// Is the PCR already signed?
 	if pcr.Status.CertificateChain != "" {
 		return nil
+	}
+
+	if !c.hasher.AssignedToThisReplica(ctx, pcr.ObjectMeta.Namespace+"/"+pcr.ObjectMeta.Name) {
+		return rendezvous.NotAssignedError
 	}
 
 	lifetime := 24 * time.Hour
@@ -201,6 +218,11 @@ func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1alpha1.PodCertif
 }
 
 func (c *Controller) ensureBundle(ctx context.Context) {
+	// Only one replica should try to maintain the trust bundles.
+	if !c.hasher.AssignedToThisReplica(ctx, "maintain-trust-bundles") {
+		return
+	}
+
 	wantCTBs := c.handler.DesiredClusterTrustBundles()
 
 	for _, wantCTB := range wantCTBs {

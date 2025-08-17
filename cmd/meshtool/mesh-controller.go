@@ -12,10 +12,12 @@ import (
 
 	"github.com/ahmedtd/mesh-example/lib/localca"
 	"github.com/ahmedtd/mesh-example/lib/podidentitysigner"
+	"github.com/ahmedtd/mesh-example/lib/rendezvous"
 	"github.com/ahmedtd/mesh-example/lib/servicednssigner"
 	"github.com/ahmedtd/mesh-example/lib/signercontroller"
 	"github.com/ahmedtd/mesh-example/lib/spiffesigner"
 	"github.com/google/subcommands"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -26,6 +28,11 @@ import (
 type MeshControllerCommand struct {
 	inCluster  bool
 	kubeConfig string
+
+	shardingNamespace       string
+	shardingPodName         string
+	shardingPodUID          string
+	shardingApplicationName string
 
 	enableServiceDNSSigner bool
 	serviceDNSCAPoolFile   string
@@ -60,6 +67,11 @@ func (c *MeshControllerCommand) SetFlags(f *flag.FlagSet) {
 
 	f.StringVar(&c.kubeConfig, "kubeconfig", kubeConfigDefault, "absolute path to the kubeconfig file")
 	f.BoolVar(&c.inCluster, "in-cluster", false, "Is the controller running in the cluster it should connect to?")
+
+	f.StringVar(&c.shardingNamespace, "sharding-pod-namespace", "", "(Work Sharding) The namespace the controller is running in")
+	f.StringVar(&c.shardingPodName, "sharding-pod-name", "", "(Work Sharding) The pod name of the controller")
+	f.StringVar(&c.shardingPodUID, "sharding-pod-uid", "", "(Work Sharding) The pod UID of the controller")
+	f.StringVar(&c.shardingApplicationName, "sharding-application-name", "", "(Work Sharding) The application name to disambiguate Leases")
 
 	f.BoolVar(
 		&c.enableServiceDNSSigner,
@@ -111,6 +123,16 @@ func (c *MeshControllerCommand) do(ctx context.Context) error {
 		return fmt.Errorf("while creating Kubernetes client: %w", err)
 	}
 
+	hasher := rendezvous.New(
+		kc,
+		c.shardingNamespace,
+		c.shardingApplicationName,
+		c.shardingPodName,
+		types.UID(c.shardingPodUID),
+		clock.RealClock{},
+	)
+	go hasher.Run(ctx)
+
 	if c.enableServiceDNSSigner {
 		serviceTLSCAPoolBytes, err := os.ReadFile(c.serviceDNSCAPoolFile)
 		if err != nil {
@@ -124,7 +146,7 @@ func (c *MeshControllerCommand) do(ctx context.Context) error {
 
 		impl := servicednssigner.NewImpl(kc, serviceTLSCAPool)
 
-		controller := signercontroller.New(clock.RealClock{}, impl, kc)
+		controller := signercontroller.New(clock.RealClock{}, impl, kc, hasher)
 		go controller.Run(ctx)
 	}
 
@@ -145,7 +167,7 @@ func (c *MeshControllerCommand) do(ctx context.Context) error {
 
 		impl := spiffesigner.NewImpl(c.spiffeTrustDomain, caPool)
 
-		controller := signercontroller.New(clock.RealClock{}, impl, kc)
+		controller := signercontroller.New(clock.RealClock{}, impl, kc, hasher)
 		go controller.Run(ctx)
 	}
 
