@@ -137,6 +137,7 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 	if errors.Is(err, rendezvous.ErrNotAssigned) {
 		klog.InfoS("Ignoring PCR because it is not assigned to this replica", "key", key)
 		c.pcrQueue.AddRateLimited(key)
+		return true
 	}
 	if err != nil {
 		klog.ErrorS(err, "Error while handling PodCertificateRequest", "key", key)
