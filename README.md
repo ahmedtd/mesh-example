@@ -47,7 +47,7 @@ the certificate is refreshed.
 
 This signer distributes its trust anchors using signer-linked
 ClusterTrustBundles.  Use the label selector
-`row-major.net/service-dns/canarying=live`.
+`service-dns.row-major.net/canarying=live`.
 
 Clients do not need any special certificate validation logic, beyond configuring
 the proper trust bundle.  If they connect to a Service via the DNS name
@@ -77,8 +77,8 @@ This signer issues SPIFFE certificates to pods, with SPIFFE identities of the fo
 
 This signer distributes its trust anchors using signer-linked
 ClusterTrustBundles.  Use the label selectors
-`row-major.net/spiffe/canarying=live` and
-`row-major.net/spiffe/trust-domain=<trust-domain>`.
+`spiffe.row-major.net/canarying=live` and
+`spiffe.row-major.net/trust-domain=<trust-domain>`.
 
 ### row-major.net/pod-identity
 

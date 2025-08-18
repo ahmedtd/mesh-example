@@ -56,7 +56,7 @@ func (h *Impl) DesiredClusterTrustBundles() []*certsv1beta1.ClusterTrustBundle {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 			Labels: map[string]string{
-				"row-major.net/service-dns/canarying": "live",
+				"service-dns.row-major.net/canarying": "live",
 			},
 		},
 		Spec: certsv1beta1.ClusterTrustBundleSpec{
