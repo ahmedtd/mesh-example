@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -24,7 +25,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	coordinationlistersv1 "k8s.io/client-go/listers/coordination/v1"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 )
@@ -132,7 +132,7 @@ func (h *Hasher) Run(ctx context.Context) {
 
 func (h *Hasher) runOnce(ctx context.Context) {
 	if err := h.ensureLease(ctx); err != nil {
-		klog.ErrorS(err, "Error while ensuring lease")
+		slog.ErrorContext(ctx, "Error while ensuring lease", slog.String("err", err.Error()))
 	}
 }
 
@@ -210,7 +210,7 @@ func (h *Hasher) AssignedToThisReplica(ctx context.Context, item string) bool {
 	// selector when defining the informer.
 	leases, err := coordinationlistersv1.NewLeaseLister(h.leaseInformer.GetIndexer()).Leases(h.leaseNamespace).List(labels.Everything())
 	if err != nil {
-		klog.ErrorS(err, "Error while listing all leases in informer")
+		slog.ErrorContext(ctx, "Error while listing all leases in informer", slog.String("err", err.Error()))
 		return false
 	}
 

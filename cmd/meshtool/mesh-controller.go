@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -96,7 +96,7 @@ func (c *MeshControllerCommand) SetFlags(f *flag.FlagSet) {
 
 func (c *MeshControllerCommand) Execute(ctx context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
 	if err := c.do(ctx); err != nil {
-		log.Printf("Error: %v", err)
+		slog.ErrorContext(ctx, "Error: ", slog.String("err", err.Error()))
 		return subcommands.ExitFailure
 	}
 	return subcommands.ExitSuccess

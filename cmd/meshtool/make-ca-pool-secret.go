@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"path/filepath"
 
 	"github.com/ahmedtd/mesh-example/lib/localca"
@@ -55,7 +55,7 @@ func (c *MakeCAPoolSecretCommand) SetFlags(f *flag.FlagSet) {
 
 func (c *MakeCAPoolSecretCommand) Execute(ctx context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
 	if err := c.do(ctx); err != nil {
-		log.Printf("Error: %v", err)
+		slog.ErrorContext(ctx, "Error: ", slog.String("err", err.Error()))
 		return subcommands.ExitFailure
 	}
 	return subcommands.ExitSuccess

@@ -8,7 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -53,7 +53,7 @@ func (c *HTTPSClientCommand) SetFlags(f *flag.FlagSet) {
 func (c *HTTPSClientCommand) Execute(ctx context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
 	for range time.Tick(10 * time.Second) {
 		if err := c.pollOnce(ctx); err != nil {
-			log.Printf("Error: %v", err)
+			slog.ErrorContext(ctx, "Error: ", slog.String("err", err.Error()))
 		}
 	}
 
@@ -136,6 +136,6 @@ func (c *HTTPSClientCommand) pollOnce(ctx context.Context) error {
 		return fmt.Errorf("while reading body: %w", err)
 	}
 
-	log.Printf("Got body: %s", string(body))
+	slog.InfoContext(ctx, "Got response body", slog.String("body", string(body)))
 	return nil
 }

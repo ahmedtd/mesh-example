@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -58,7 +59,7 @@ func (c *DemoServerCommand) SetFlags(f *flag.FlagSet) {
 
 func (c *DemoServerCommand) Execute(ctx context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
 	if err := c.do(ctx); err != nil {
-		log.Printf("Error: %v", err)
+		slog.ErrorContext(ctx, "Error: ", slog.String("err", err.Error()))
 		return subcommands.ExitFailure
 	}
 	return subcommands.ExitSuccess

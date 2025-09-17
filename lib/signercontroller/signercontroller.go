@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/ahmedtd/mesh-example/lib/rendezvous"
@@ -21,7 +22,6 @@ import (
 	certlistersv1alpha1 "k8s.io/client-go/listers/certificates/v1alpha1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
-	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 )
@@ -116,11 +116,14 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 	}
 	defer c.pcrQueue.Done(key)
 
-	klog.InfoS("Processing PCR", "key", key)
+	slog.InfoContext(ctx, "Processing PCR", slog.String("key", key))
 
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
-		klog.ErrorS(err, "Error while splitting key into namespace and name", "key", key)
+		slog.ErrorContext(ctx, "Error splitting key into namespace and name",
+			slog.String("err", err.Error()),
+			slog.String("key", key),
+		)
 		return true
 	}
 
@@ -129,18 +132,26 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 		c.pcrQueue.Forget(key)
 		return true
 	} else if err != nil {
-		klog.ErrorS(err, "Error while retrieving PodCertificateRequest", "key", key)
+		slog.ErrorContext(ctx, "Error while retrieving PodCertificateRequest",
+			slog.String("err", err.Error()),
+			slog.String("key", key),
+		)
 		return true
 	}
 
 	err = c.handlePCR(ctx, pcr)
 	if errors.Is(err, rendezvous.ErrNotAssigned) {
-		klog.InfoS("Ignoring PCR because it is not assigned to this replica", "key", key)
+		slog.InfoContext(ctx, "Ignoring PCR because it is not assigned to this replica",
+			slog.String("key", key),
+		)
 		c.pcrQueue.AddRateLimited(key)
 		return true
 	}
 	if err != nil {
-		klog.ErrorS(err, "Error while handling PodCertificateRequest", "key", key)
+		slog.ErrorContext(ctx, "Error while handling PodCertificateRequest",
+			slog.String("err", err.Error()),
+			slog.String("key", key),
+		)
 		c.pcrQueue.AddRateLimited(key)
 		return true
 	}
@@ -231,17 +242,25 @@ func (c *Controller) ensureBundle(ctx context.Context) {
 		if k8serrors.IsNotFound(err) {
 			_, err = c.kc.CertificatesV1beta1().ClusterTrustBundles().Create(ctx, wantCTB, metav1.CreateOptions{})
 			if err != nil {
-				klog.ErrorS(err, "while creating ClusterTrustBundle", "key", wantCTB.ObjectMeta.Name)
+				slog.ErrorContext(ctx, "Error while creating ClusterTrustBundle",
+					slog.String("err", err.Error()),
+					slog.String("key", wantCTB.ObjectMeta.Name),
+				)
 				return
 			}
 			return
 		} else if err != nil {
-			klog.ErrorS(err, "while getting ClusterTrustBundle", "key", wantCTB.ObjectMeta.Name)
+			slog.ErrorContext(ctx, "Error while getting ClusterTrustBundle",
+				slog.String("err", err.Error()),
+				slog.String("key", wantCTB.ObjectMeta.Name),
+			)
 			return
 		}
 
 		if apiequality.Semantic.DeepEqual(wantCTB.Labels, ctb.Labels) && apiequality.Semantic.DeepEqual(wantCTB.Spec, ctb.Spec) {
-			klog.InfoS("ClusterTrustBundle already in correct state", "key", wantCTB.ObjectMeta.Name)
+			slog.InfoContext(ctx, "ClusterTrustBundle already in correct state",
+				slog.String("key", wantCTB.ObjectMeta.Name),
+			)
 		}
 
 		ctb = ctb.DeepCopy()
@@ -250,7 +269,10 @@ func (c *Controller) ensureBundle(ctx context.Context) {
 
 		_, err = c.kc.CertificatesV1beta1().ClusterTrustBundles().Update(ctx, ctb, metav1.UpdateOptions{})
 		if err != nil {
-			klog.ErrorS(err, "while updating ClusterTrustBundle", "key", wantCTB.ObjectMeta.Name)
+			slog.ErrorContext(ctx, "Error while updating ClusterTrustBundle",
+				slog.String("err", err.Error()),
+				slog.String("key", wantCTB.ObjectMeta.Name),
+			)
 		}
 	}
 }
