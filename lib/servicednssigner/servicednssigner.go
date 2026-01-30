@@ -11,7 +11,6 @@ import (
 
 	"github.com/ahmedtd/mesh-example/lib/localca"
 	"github.com/ahmedtd/mesh-example/lib/signercontroller"
-	certsv1alpha1 "k8s.io/api/certificates/v1alpha1"
 	certsv1beta1 "k8s.io/api/certificates/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -74,7 +73,7 @@ func (h *Impl) CAPool() *localca.Pool {
 	return h.caPool
 }
 
-func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1alpha1.PodCertificateRequest) ([]*x509.Certificate, error) {
+func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1beta1.PodCertificateRequest) ([]*x509.Certificate, error) {
 	// TODO: Switch from live reads to indexer
 
 	// If our signer had a policy about which pods are allowed to request
@@ -122,9 +121,9 @@ func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr 
 
 	// TODO: Encode the OIDC issuer of the cluster into the certificate.
 
-	subjectPublicKey, err := x509.ParsePKIXPublicKey(pcr.Spec.PKIXPublicKey)
+	pkcs10Req, err := x509.ParseCertificateRequest(pcr.Spec.UnverifiedPKCS10Request)
 	if err != nil {
-		return nil, fmt.Errorf("while parsing subject public key: %w", err)
+		return nil, fmt.Errorf("while parsing PKCS#10 request: %w", err)
 	}
 
 	// If our signer had an opinion on which key types were allowable, it would
@@ -140,7 +139,7 @@ func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr 
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 	}
 
-	subjectCertDER, err := x509.CreateCertificate(rand.Reader, template, h.caPool.CAs[0].RootCertificate, subjectPublicKey, h.caPool.CAs[0].SigningKey)
+	subjectCertDER, err := x509.CreateCertificate(rand.Reader, template, h.caPool.CAs[0].RootCertificate, pkcs10Req.PublicKey, h.caPool.CAs[0].SigningKey)
 	if err != nil {
 		return nil, fmt.Errorf("while signing subject cert: %w", err)
 	}

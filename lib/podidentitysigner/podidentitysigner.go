@@ -10,7 +10,6 @@ import (
 
 	"github.com/ahmedtd/mesh-example/lib/localca"
 	"github.com/ahmedtd/mesh-example/lib/signercontroller"
-	certsv1alpha1 "k8s.io/api/certificates/v1alpha1"
 	certsv1beta1 "k8s.io/api/certificates/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -63,7 +62,7 @@ func (h *Impl) CAPool() *localca.Pool {
 	return h.caPool
 }
 
-func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1alpha1.PodCertificateRequest) ([]*x509.Certificate, error) {
+func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1beta1.PodCertificateRequest) ([]*x509.Certificate, error) {
 	// TODO: Put a PodIdentity extension in the cert.
 
 	return nil, fmt.Errorf("unimplemented")

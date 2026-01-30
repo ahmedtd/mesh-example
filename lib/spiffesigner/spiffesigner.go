@@ -13,7 +13,6 @@ import (
 
 	"github.com/ahmedtd/mesh-example/lib/localca"
 	"github.com/ahmedtd/mesh-example/lib/signercontroller"
-	certsv1alpha1 "k8s.io/api/certificates/v1alpha1"
 	certsv1beta1 "k8s.io/api/certificates/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -77,7 +76,7 @@ func (h *Impl) CAPool() *localca.Pool {
 	return h.caPool
 }
 
-func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1alpha1.PodCertificateRequest) ([]*x509.Certificate, error) {
+func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1beta1.PodCertificateRequest) ([]*x509.Certificate, error) {
 	spiffeURI := &url.URL{
 		Scheme: "spiffe",
 		Host:   h.spiffeTrustDomain,
@@ -93,12 +92,12 @@ func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr 
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 	}
 
-	subjectPublicKey, err := x509.ParsePKIXPublicKey(pcr.Spec.PKIXPublicKey)
+	pkcs10Req, err := x509.ParseCertificateRequest(pcr.Spec.UnverifiedPKCS10Request)
 	if err != nil {
-		return nil, fmt.Errorf("while parsing subject public key: %w", err)
+		return nil, fmt.Errorf("while parsing PKCS#10 request: %w", err)
 	}
 
-	subjectCertDER, err := x509.CreateCertificate(rand.Reader, template, h.caPool.CAs[0].RootCertificate, subjectPublicKey, h.caPool.CAs[0].SigningKey)
+	subjectCertDER, err := x509.CreateCertificate(rand.Reader, template, h.caPool.CAs[0].RootCertificate, pkcs10Req.PublicKey, h.caPool.CAs[0].SigningKey)
 	if err != nil {
 		return nil, fmt.Errorf("while signing subject cert: %w", err)
 	}
