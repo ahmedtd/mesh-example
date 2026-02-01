@@ -131,6 +131,8 @@ spec:
         - --enable-spiffe-signer=true
         - --spiffe-trust-domain=cluster.local
         - --spiffe-ca-pool=/run/ca-state/spiffe-pool.json
+        - --enable-acme-signer=true
+        - --acme-account-key=/run/acme-client/client-private-key.pkcs8
         env:
         - name: POD_NAMESPACE
           valueFrom:
@@ -144,12 +146,11 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.uid
-        volumeMounts: [
-          {
-            name: "ca-state",
-            mountPath: "/run/ca-state",
-          }
-        ]
+        volumeMounts:
+        - name: "ca-state"
+          mountPath: "/run/ca-state"
+        - name: "acme-client"
+          mountPath: "/run/acme-client"
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
@@ -173,6 +174,14 @@ spec:
               items:
               - key: "pool"
                 path: "spiffe-pool.json"
+      - name: "acme-client"
+        projected:
+          sources:
+          - secret:
+              name: "acme-client-key"
+              items:
+              - key: "private-key"
+                path: "client-private-key.pkcs8"
       dnsPolicy: Default
       nodeSelector:
         kubernetes.io/os: linux

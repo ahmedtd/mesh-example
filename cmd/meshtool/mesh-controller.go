@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -9,7 +11,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
+	"github.com/ahmedtd/mesh-example/lib/acmesigner"
 	"github.com/ahmedtd/mesh-example/lib/localca"
 	"github.com/ahmedtd/mesh-example/lib/podidentitysigner"
 	"github.com/ahmedtd/mesh-example/lib/rendezvous"
@@ -43,6 +47,9 @@ type MeshControllerCommand struct {
 
 	enablePodIdentitySigner bool
 	podIdentityCAPoolFile   string
+
+	enableACMESigner   bool
+	acmeAccountKeyFile string
 }
 
 var _ subcommands.Command = (*MeshControllerCommand)(nil)
@@ -92,6 +99,9 @@ func (c *MeshControllerCommand) SetFlags(f *flag.FlagSet) {
 
 	f.BoolVar(&c.enablePodIdentitySigner, "enable-pod-identity-signer", false, fmt.Sprintf("Run controller for %s", podidentitysigner.Name))
 	f.StringVar(&c.podIdentityCAPoolFile, "pod-identity-ca-pool", "", fmt.Sprintf("File that contains the CA pool state for %s", podidentitysigner.Name))
+
+	f.BoolVar(&c.enableACMESigner, "enable-acme-signer", false, fmt.Sprintf("Run controller for %s", acmesigner.Name))
+	f.StringVar(&c.acmeAccountKeyFile, "acme-account-key", "", "File that contains a PKCS#8 private key to use as the ACME account key")
 }
 
 func (c *MeshControllerCommand) Execute(ctx context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
@@ -168,6 +178,33 @@ func (c *MeshControllerCommand) do(ctx context.Context) error {
 		impl := spiffesigner.NewImpl(c.spiffeTrustDomain, caPool)
 
 		controller := signercontroller.New(clock.RealClock{}, impl, kc, hasher)
+		go controller.Run(ctx)
+	}
+
+	if c.enableACMESigner {
+		accountKeyBytes, err := os.ReadFile(c.acmeAccountKeyFile)
+		if err != nil {
+			return fmt.Errorf("while loading ACME client key: %w", err)
+		}
+
+		accountKeyAny, err := x509.ParsePKCS8PrivateKey(accountKeyBytes)
+		if err != nil {
+			return fmt.Errorf("while parsing ACME client key: %w", err)
+		}
+
+		accountKey := accountKeyAny.(crypto.Signer)
+
+		impl := acmesigner.NewImpl(accountKey, []string{"mailto:taahm@google.com"}, []string{"acme-test.row-major.net"})
+		controller := signercontroller.New(clock.RealClock{}, impl, kc, hasher)
+
+		go func() {
+			for range time.Tick(1 * time.Minute) {
+				if err := impl.PreAuthorize(ctx); err != nil {
+					slog.ErrorContext(ctx, "Error while registering and pre-authorizing", slog.Any("err", err))
+				}
+			}
+		}()
+
 		go controller.Run(ctx)
 	}
 

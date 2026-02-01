@@ -17,6 +17,7 @@ func main() {
 	subcommands.Register(&DemoServerCommand{}, "")
 	subcommands.Register(&HTTPSClientCommand{}, "")
 	subcommands.Register(&MakeCAPoolSecretCommand{}, "")
+	subcommands.Register(&MakeACMEClientKeySecretCommand{}, "")
 
 	flag.Parse()
 	ctx := context.Background()

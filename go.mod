@@ -8,6 +8,7 @@ replace k8s.io/api => ./fork/api
 
 require (
 	github.com/google/subcommands v1.2.0
+	golang.org/x/crypto v0.47.0
 	k8s.io/api v0.0.0-20260129214002-fd489ea10e70
 	k8s.io/apimachinery v0.0.0-20260128173627-f88bdbffa260
 	k8s.io/client-go v0.0.0-20250725024918-f78361a6474d
