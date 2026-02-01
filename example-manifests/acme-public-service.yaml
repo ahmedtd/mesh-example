@@ -52,6 +52,8 @@ spec:
               signerName: row-major.net/acme
               keyType: ECDSAP256
               credentialBundlePath: acme-cred-bundle.pem
+              pkcs10RequestParameters:
+                dns: ["acme-example.row-major.net"]
       restartPolicy: Always
 ---
 apiVersion: v1

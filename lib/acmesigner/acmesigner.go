@@ -13,6 +13,8 @@ import (
 	"github.com/ahmedtd/mesh-example/lib/signercontroller"
 	"golang.org/x/crypto/acme"
 	certsv1beta1 "k8s.io/api/certificates/v1beta1"
+	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -61,8 +63,6 @@ func NewImpl(kc kubernetes.Interface, acmeAccountKey crypto.Signer, contactURLs 
 var _ signercontroller.SignerImpl = (*Impl)(nil)
 
 func (h *Impl) Register(ctx context.Context) error {
-	slog.InfoContext(ctx, "Begining PreAuthorize")
-
 	var acct *acme.Account
 	var err error
 	acct, err = h.ac.GetReg(ctx, "")
@@ -137,6 +137,35 @@ func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr 
 				dnsRecord, err := h.ac.DNS01ChallengeRecord(challenge.Token)
 				if err != nil {
 					return nil, fmt.Errorf("while constructing DNS record for challenge: %w", err)
+				}
+
+				_, err = h.ac.Accept(ctx, challenge)
+				if err != nil {
+					return nil, fmt.Errorf("while accepting challenge: %w", err)
+				}
+
+				evt := &eventsv1.Event{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace:    pcr.ObjectMeta.Namespace,
+						GenerateName: "evt-",
+					},
+					EventTime:           metav1.NowMicro(),
+					ReportingController: "mesh-controller",
+					ReportingInstance:   "abc",
+					Regarding: corev1.ObjectReference{
+						APIVersion: "core/v1",
+						Kind:       "Pod",
+						Namespace:  pcr.ObjectMeta.Namespace,
+						Name:       pcr.Spec.PodName,
+					},
+					Type:   "Normal",
+					Action: "DNS01Challenge",
+					Reason: "DNS01Challenge",
+					Note:   fmt.Sprintf("Add a DNS-01 challenge TXT record to the issued domain for %s, value %q", authz.Identifier.Value, dnsRecord),
+				}
+				_, err = h.kc.EventsV1().Events(pcr.ObjectMeta.Namespace).Create(ctx, evt, metav1.CreateOptions{})
+				if err != nil {
+					return nil, fmt.Errorf("while creating event: %w", err)
 				}
 
 				slog.InfoContext(ctx, "DNS-01 challenge; add a TXT record", slog.String("key", "_acme-challenge."+authz.Identifier.Value), slog.String("value", dnsRecord))
