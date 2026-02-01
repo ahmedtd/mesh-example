@@ -7,16 +7,27 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
-	"github.com/ahmedtd/mesh-example/lib/localca"
 	"github.com/ahmedtd/mesh-example/lib/signercontroller"
 	"golang.org/x/crypto/acme"
 	certsv1beta1 "k8s.io/api/certificates/v1beta1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
-const Name = "row-major.net/acme"
+const (
+	Name = "row-major.net/acme"
+
+	OrderAnnotation   = "acme.row-major.net/order-url"
+	CertURLAnnotation = "acme.row-major.net/cert-url"
+)
+
+type namespaceName struct {
+	namespace string
+	name      string
+}
 
 type Impl struct {
 	kc kubernetes.Interface
@@ -26,10 +37,15 @@ type Impl struct {
 	domains []string
 	// URLs for account contact.
 	contactURLs []string
+
+	lock sync.Mutex
+	// Maps PodCertificateRequests to order URLs
+	orders map[namespaceName]string
 }
 
-func NewImpl(acmeAccountKey crypto.Signer, contactURLs []string, domains []string) *Impl {
+func NewImpl(kc kubernetes.Interface, acmeAccountKey crypto.Signer, contactURLs []string, domains []string) *Impl {
 	return &Impl{
+		kc: kc,
 		ac: &acme.Client{
 			// Use the staging environment.  Prod LetsEncrypt has rate limits
 			// that make Pod Certificates a bad fit for it.  In particular, only
@@ -44,7 +60,7 @@ func NewImpl(acmeAccountKey crypto.Signer, contactURLs []string, domains []strin
 
 var _ signercontroller.SignerImpl = (*Impl)(nil)
 
-func (h *Impl) PreAuthorize(ctx context.Context) error {
+func (h *Impl) Register(ctx context.Context) error {
 	slog.InfoContext(ctx, "Begining PreAuthorize")
 
 	var acct *acme.Account
@@ -60,39 +76,6 @@ func (h *Impl) PreAuthorize(ctx context.Context) error {
 	}
 	slog.InfoContext(ctx, "Got account", slog.String("account", acct.URI))
 
-	for _, domain := range h.domains {
-		authz, err := h.ac.Authorize(ctx, domain)
-		if err != nil {
-			return fmt.Errorf("while authorizing %q: %w", domain, err)
-		}
-
-		// If the domain is already authorized, nothing to do.
-		if authz.Status == acme.StatusValid {
-			continue
-		}
-
-		for _, challenge := range authz.Challenges {
-			// For now, only support dns-01 challenges, and just print the token
-			// for the operator to manually create the challenge entry.
-			//
-			// Other challenge types are going to require ingress into the
-			// cluster.
-			if challenge.Type == "dns-01" {
-				slog.InfoContext(ctx, "dns-01 challenge for domain", slog.String("domain", domain), slog.String("token", challenge.Token))
-
-				_, err := h.ac.Accept(ctx, challenge)
-				if err != nil {
-					return fmt.Errorf("while accepting challenge: %w", err)
-				}
-			}
-		}
-
-		_, err = h.ac.WaitAuthorization(ctx, authz.URI)
-		if err != nil {
-			return fmt.Errorf("while waiting for authorization for domain %q: %w", domain, err)
-		}
-	}
-
 	return nil
 }
 
@@ -104,10 +87,90 @@ func (h *Impl) DesiredClusterTrustBundles() []*certsv1beta1.ClusterTrustBundle {
 	return nil
 }
 
-func (h *Impl) CAPool() *localca.Pool {
-	return nil
-}
-
 func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1beta1.PodCertificateRequest) ([]*x509.Certificate, error) {
-	return nil, fmt.Errorf("unimplemented")
+	pkcs10Req, err := x509.ParseCertificateRequest(pcr.Spec.UnverifiedPKCS10Request)
+	if err != nil {
+		return nil, fmt.Errorf("while parsing spec.unverifiedPKCS10Request: %w", err)
+	}
+
+	// Look up the order we already created for this PCR, or create one now.
+	var order *acme.Order
+	if pcr.ObjectMeta.Annotations[OrderAnnotation] != "" {
+		order, err = h.ac.GetOrder(ctx, pcr.ObjectMeta.Annotations[OrderAnnotation])
+		if err != nil {
+			return nil, fmt.Errorf("while fetching existing order for PodCertificateRequest: %w", err)
+		}
+	} else {
+		order, err = h.ac.AuthorizeOrder(ctx, acme.DomainIDs(pkcs10Req.DNSNames...))
+		if err != nil {
+			return nil, fmt.Errorf("while creating order: %w", err)
+		}
+
+		pcrCopy := pcr.DeepCopy()
+		if pcrCopy.ObjectMeta.Annotations == nil {
+			pcrCopy.ObjectMeta.Annotations = map[string]string{}
+		}
+		pcrCopy.ObjectMeta.Annotations[OrderAnnotation] = order.URI
+		_, err = h.kc.CertificatesV1beta1().PodCertificateRequests(pcr.ObjectMeta.Namespace).Update(ctx, pcrCopy, metav1.UpdateOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("while updating PodCertificateRequest with order annotation: %w", err)
+		}
+	}
+
+	if order.Status == acme.StatusPending {
+		for _, authzURL := range order.AuthzURLs {
+			authz, err := h.ac.GetAuthorization(ctx, authzURL)
+			if err != nil {
+				return nil, fmt.Errorf("while fetching authorization: %w", err)
+			}
+
+			if authz.Status != acme.StatusPending {
+				slog.InfoContext(ctx, "Authorization is not pending", slog.String("authorization", authzURL))
+				continue
+			}
+
+			for _, challenge := range authz.Challenges {
+				if challenge.Type != "dns-01" {
+					continue
+				}
+
+				dnsRecord, err := h.ac.DNS01ChallengeRecord(challenge.Token)
+				if err != nil {
+					return nil, fmt.Errorf("while constructing DNS record for challenge: %w", err)
+				}
+
+				slog.InfoContext(ctx, "DNS-01 challenge; add a TXT record", slog.String("key", "_acme-challenge."+authz.Identifier.Value), slog.String("value", dnsRecord))
+			}
+		}
+		return nil, fmt.Errorf("waiting on authorization of order")
+	} else if order.Status == acme.StatusReady {
+		chainDER, refetchURL, err := h.ac.CreateOrderCert(ctx, order.FinalizeURL, pcr.Spec.UnverifiedPKCS10Request, true)
+		if err != nil {
+			return nil, fmt.Errorf("while finalizing order: %w", err)
+		}
+
+		pcrCopy := pcr.DeepCopy()
+		if pcrCopy.ObjectMeta.Annotations == nil {
+			pcrCopy.ObjectMeta.Annotations = map[string]string{}
+		}
+		pcrCopy.ObjectMeta.Annotations[CertURLAnnotation] = refetchURL
+		_, err = h.kc.CertificatesV1beta1().PodCertificateRequests(pcr.ObjectMeta.Namespace).Update(ctx, pcrCopy, metav1.UpdateOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("while updating PodCertificateRequest with order annotation: %w", err)
+		}
+
+		parsedChain := []*x509.Certificate{}
+		for _, certDER := range chainDER {
+			parsedCert, err := x509.ParseCertificate(certDER)
+			if err != nil {
+				return nil, fmt.Errorf("while parsing issued certificate: %w", err)
+			}
+
+			parsedChain = append(parsedChain, parsedCert)
+		}
+
+		return parsedChain, nil
+	} else {
+		return nil, fmt.Errorf("order in unhandled status: %v", order.Status)
+	}
 }

@@ -11,7 +11,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/ahmedtd/mesh-example/lib/acmesigner"
 	"github.com/ahmedtd/mesh-example/lib/localca"
@@ -196,16 +195,12 @@ func (c *MeshControllerCommand) do(ctx context.Context) error {
 
 		accountKey := accountKeyAny.(crypto.Signer)
 
-		impl := acmesigner.NewImpl(accountKey, []string{"mailto:taahm@google.com"}, []string{"acme-test.row-major.net"})
+		impl := acmesigner.NewImpl(kc, accountKey, []string{"mailto:taahm@google.com"}, []string{"acme-test.row-major.net"})
 		controller := signercontroller.New(clock.RealClock{}, impl, kc, hasher)
 
-		go func() {
-			for range time.Tick(1 * time.Minute) {
-				if err := impl.PreAuthorize(ctx); err != nil {
-					slog.ErrorContext(ctx, "Error while registering and pre-authorizing", slog.Any("err", err))
-				}
-			}
-		}()
+		if err := impl.Register(ctx); err != nil {
+			return fmt.Errorf("while retrieving/registering account: %w", err)
+		}
 
 		go controller.Run(ctx)
 	}

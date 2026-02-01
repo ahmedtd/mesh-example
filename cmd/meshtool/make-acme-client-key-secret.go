@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
 	"flag"
 	"fmt"
@@ -31,7 +33,7 @@ func (*MakeACMEClientKeySecretCommand) Name() string {
 }
 
 func (*MakeACMEClientKeySecretCommand) Synopsis() string {
-	return "Make a new secret that contains an ED25519 private key to be used as an ACME client key"
+	return "Make a new secret that contains an ECDSA P256 private key to be used as an ACME client key"
 }
 
 func (*MakeACMEClientKeySecretCommand) Usage() string {
@@ -69,9 +71,9 @@ func (c *MakeACMEClientKeySecretCommand) do(ctx context.Context) error {
 		return fmt.Errorf("while creating Kubernetes client: %w", err)
 	}
 
-	_, priv, err := ed25519.GenerateKey(nil)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return fmt.Errorf("while generating ed25519 key: %w", err)
+		return fmt.Errorf("while generating ECDSA key: %w", err)
 	}
 
 	pkcs8Bytes, err := x509.MarshalPKCS8PrivateKey(priv)
