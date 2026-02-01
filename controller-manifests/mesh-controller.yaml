@@ -180,7 +180,7 @@ spec:
           - secret:
               name: "acme-client-key"
               items:
-              - key: "private-key"
+              - key: "client-private-key.pkcs8"
                 path: "client-private-key.pkcs8"
       dnsPolicy: Default
       nodeSelector:

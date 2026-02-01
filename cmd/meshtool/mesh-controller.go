@@ -182,6 +182,8 @@ func (c *MeshControllerCommand) do(ctx context.Context) error {
 	}
 
 	if c.enableACMESigner {
+		slog.InfoContext(ctx, "Booting ACME signer")
+
 		accountKeyBytes, err := os.ReadFile(c.acmeAccountKeyFile)
 		if err != nil {
 			return fmt.Errorf("while loading ACME client key: %w", err)

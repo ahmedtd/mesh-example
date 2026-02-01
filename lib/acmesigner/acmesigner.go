@@ -45,6 +45,8 @@ func NewImpl(acmeAccountKey crypto.Signer, contactURLs []string, domains []strin
 var _ signercontroller.SignerImpl = (*Impl)(nil)
 
 func (h *Impl) PreAuthorize(ctx context.Context) error {
+	slog.InfoContext(ctx, "Begining PreAuthorize")
+
 	var acct *acme.Account
 	var err error
 	acct, err = h.ac.GetReg(ctx, "")
@@ -53,6 +55,8 @@ func (h *Impl) PreAuthorize(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("while registering new account: %w", err)
 		}
+	} else if err != nil {
+		return fmt.Errorf("while fetching account: %w", err)
 	}
 	slog.InfoContext(ctx, "Got account", slog.String("account", acct.URI))
 
