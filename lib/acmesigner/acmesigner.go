@@ -15,8 +15,6 @@ import (
 	"github.com/ahmedtd/mesh-example/lib/signercontroller"
 	"golang.org/x/crypto/acme"
 	certsv1beta1 "k8s.io/api/certificates/v1beta1"
-	corev1 "k8s.io/api/core/v1"
-	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/clock"
@@ -165,42 +163,34 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 				)
 
 				threshold := pcr.ObjectMeta.CreationTimestamp.Time.Add(5 * time.Minute)
+				slog.InfoContext(
+					ctx,
+					"Calculated threshold",
+					slog.String("pcr", pcr.ObjectMeta.Namespace+"/"+pcr.ObjectMeta.Name),
+					slog.Any("threshold", threshold),
+				)
 				if h.clock.Now().Before(threshold) {
-					slog.InfoContext(ctx, "Stalling until %v so you can create DNS record manually", threshold)
+					slog.InfoContext(
+						ctx,
+						"Stalling for threshold",
+						slog.String("pcr", pcr.ObjectMeta.Namespace+"/"+pcr.ObjectMeta.Name),
+						slog.Any("threshold", threshold),
+					)
 					return fmt.Errorf("stalling before accepting DNS-01 challenge")
 				}
 
+				slog.InfoContext(
+					ctx,
+					"Accepting challenge",
+					slog.String("pcr", pcr.ObjectMeta.Namespace+"/"+pcr.ObjectMeta.Name),
+				)
 				_, err = h.ac.Accept(ctx, challenge)
 				if err != nil {
 					return fmt.Errorf("while accepting challenge: %w", err)
 				}
-
-				evt := &eventsv1.Event{
-					ObjectMeta: metav1.ObjectMeta{
-						Namespace:    pcr.ObjectMeta.Namespace,
-						GenerateName: "evt-",
-					},
-					EventTime:           metav1.NewMicroTime(h.clock.Now()),
-					ReportingController: "mesh-controller",
-					ReportingInstance:   "abc",
-					Regarding: corev1.ObjectReference{
-						APIVersion: "core/v1",
-						Kind:       "Pod",
-						Namespace:  pcr.ObjectMeta.Namespace,
-						Name:       pcr.Spec.PodName,
-					},
-					Type:   "Normal",
-					Action: "DNS01Challenge",
-					Reason: "DNS01Challenge",
-					Note:   fmt.Sprintf("Add a DNS-01 challenge TXT record to the issued domain for %s, value %q", authz.Identifier.Value, dnsRecord),
-				}
-				_, err = h.kc.EventsV1().Events(pcr.ObjectMeta.Namespace).Create(ctx, evt, metav1.CreateOptions{})
-				if err != nil {
-					return fmt.Errorf("while creating event: %w", err)
-				}
 			}
 		}
-		return fmt.Errorf("waiting on authorization of order")
+		return fmt.Errorf("order is still pending")
 	} else if order.Status == acme.StatusReady {
 		chainDER, refetchURL, err := h.ac.CreateOrderCert(ctx, order.FinalizeURL, pcr.Spec.UnverifiedPKCS10Request, true)
 		if err != nil {
