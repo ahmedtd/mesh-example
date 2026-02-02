@@ -160,9 +160,16 @@ func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1beta1.PodCertifi
 	// PodCertificateRequests don't have an approval stage, and the node
 	// restriction / isolation check is handled by kube-apiserver.
 
-	// Is the PCR already signed?
-	if pcr.Status.CertificateChain != "" {
-		return nil
+	for _, cond := range pcr.Status.Conditions {
+		if cond.Type == certsv1beta1.PodCertificateRequestConditionTypeIssued {
+			return nil
+		}
+		if cond.Type == certsv1beta1.PodCertificateRequestConditionTypeDenied {
+			return nil
+		}
+		if cond.Type == certsv1beta1.PodCertificateRequestConditionTypeFailed {
+			return nil
+		}
 	}
 
 	if !c.hasher.AssignedToThisReplica(ctx, pcr.ObjectMeta.Namespace+"/"+pcr.ObjectMeta.Name) {
