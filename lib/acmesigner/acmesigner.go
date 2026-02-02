@@ -150,6 +150,14 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 					return fmt.Errorf("while constructing DNS record for challenge: %w", err)
 				}
 
+				slog.InfoContext(ctx, "DNS-01 challenge; add a TXT record", slog.String("key", "_acme-challenge."+authz.Identifier.Value), slog.String("value", dnsRecord))
+
+				threshold := pcr.ObjectMeta.CreationTimestamp.Time.Add(5 * time.Minute)
+				if h.clock.Now().Before(threshold) {
+					slog.InfoContext(ctx, "Stalling until %v so you can create DNS record manually", threshold)
+					return fmt.Errorf("stalling before accepting DNS-01 challenge")
+				}
+
 				_, err = h.ac.Accept(ctx, challenge)
 				if err != nil {
 					return fmt.Errorf("while accepting challenge: %w", err)
@@ -178,8 +186,6 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 				if err != nil {
 					return fmt.Errorf("while creating event: %w", err)
 				}
-
-				slog.InfoContext(ctx, "DNS-01 challenge; add a TXT record", slog.String("key", "_acme-challenge."+authz.Identifier.Value), slog.String("value", dnsRecord))
 			}
 		}
 		return fmt.Errorf("waiting on authorization of order")
