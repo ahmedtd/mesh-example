@@ -126,6 +126,13 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 		}
 	}
 
+	slog.InfoContext(
+		ctx,
+		"Processing PCR",
+		slog.String("pcr", pcr.ObjectMeta.Namespace+"/"+pcr.ObjectMeta.Name),
+		slog.Any("order", order),
+	)
+
 	if order.Status == acme.StatusPending {
 		for _, authzURL := range order.AuthzURLs {
 			authz, err := h.ac.GetAuthorization(ctx, authzURL)
@@ -134,7 +141,6 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 			}
 
 			slog.InfoContext(ctx, "Dump authorization", slog.Any("authorization", authz))
-
 			if authz.Status != acme.StatusPending {
 				slog.InfoContext(ctx, "Authorization is not pending", slog.String("authorization", authzURL))
 				continue
@@ -150,7 +156,13 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 					return fmt.Errorf("while constructing DNS record for challenge: %w", err)
 				}
 
-				slog.InfoContext(ctx, "DNS-01 challenge; add a TXT record", slog.String("key", "_acme-challenge."+authz.Identifier.Value), slog.String("value", dnsRecord))
+				slog.InfoContext(
+					ctx,
+					"DNS-01 challenge; add a TXT record",
+					slog.String("pcr", pcr.ObjectMeta.Namespace+"/"+pcr.ObjectMeta.Name),
+					slog.String("key", "_acme-challenge."+authz.Identifier.Value),
+					slog.String("value", dnsRecord),
+				)
 
 				threshold := pcr.ObjectMeta.CreationTimestamp.Time.Add(5 * time.Minute)
 				if h.clock.Now().Before(threshold) {
@@ -261,7 +273,6 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 		// We are done with this PCR.
 		return nil
 	} else {
-
 		return fmt.Errorf("order in unhandled status: %v", order.Status)
 	}
 }
