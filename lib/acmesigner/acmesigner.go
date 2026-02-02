@@ -192,7 +192,7 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 		}
 		return fmt.Errorf("order is still pending")
 	} else if order.Status == acme.StatusReady {
-		chainDER, refetchURL, err := h.ac.CreateOrderCert(ctx, order.FinalizeURL, pcr.Spec.UnverifiedPKCS10Request, true)
+		chainDER, _, err := h.ac.CreateOrderCert(ctx, order.FinalizeURL, pcr.Spec.UnverifiedPKCS10Request, true)
 		if err != nil {
 			return fmt.Errorf("while finalizing order: %w", err)
 		}
@@ -201,16 +201,6 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 		leafCert, err := x509.ParseCertificate(leafDER)
 		if err != nil {
 			return fmt.Errorf("while parsing issued leaf certificate: %w", err)
-		}
-
-		pcrCopy := pcr.DeepCopy()
-		if pcrCopy.ObjectMeta.Annotations == nil {
-			pcrCopy.ObjectMeta.Annotations = map[string]string{}
-		}
-		pcrCopy.ObjectMeta.Annotations[CertURLAnnotation] = refetchURL
-		_, err = h.kc.CertificatesV1beta1().PodCertificateRequests(pcr.ObjectMeta.Namespace).Update(ctx, pcrCopy, metav1.UpdateOptions{})
-		if err != nil {
-			return fmt.Errorf("while updating PodCertificateRequest with order annotation: %w", err)
 		}
 
 		chainPEM := &bytes.Buffer{}
@@ -244,8 +234,12 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 			return fmt.Errorf("while updating PodCertificateRequest: %w", err)
 		}
 
-		// We are
+		// TODO: Save the refetch URL in an annotation?
+
 		return nil
+	} else if order.Status == acme.StatusValid {
+		// TODO: Attempt to refetch the order from the URL we stashed on the PCR.
+		return fmt.Errorf("order in unhandled status: valid")
 	} else if order.Status == acme.StatusInvalid {
 		pcrCopy := pcr.DeepCopy()
 		pcrCopy.Status.Conditions = append(pcr.Status.Conditions, metav1.Condition{

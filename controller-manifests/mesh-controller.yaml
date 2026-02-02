@@ -113,7 +113,7 @@ metadata:
   labels:
     app: mesh-controller
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: mesh-controller
