@@ -153,7 +153,7 @@ func (c *MeshControllerCommand) do(ctx context.Context) error {
 			return fmt.Errorf("while unmarshaling Service DNS ca pool state: %w", err)
 		}
 
-		impl := servicednssigner.NewImpl(kc, serviceTLSCAPool)
+		impl := servicednssigner.NewImpl(kc, serviceTLSCAPool, clock.RealClock{})
 
 		controller := signercontroller.New(clock.RealClock{}, impl, kc, hasher)
 		go controller.Run(ctx)
@@ -174,7 +174,7 @@ func (c *MeshControllerCommand) do(ctx context.Context) error {
 			return fmt.Errorf("while unmarshaling SPIFFE ca pool state: %w", err)
 		}
 
-		impl := spiffesigner.NewImpl(c.spiffeTrustDomain, caPool)
+		impl := spiffesigner.NewImpl(kc, c.spiffeTrustDomain, caPool, clock.RealClock{})
 
 		controller := signercontroller.New(clock.RealClock{}, impl, kc, hasher)
 		go controller.Run(ctx)
@@ -193,7 +193,7 @@ func (c *MeshControllerCommand) do(ctx context.Context) error {
 
 		accountKey := accountKeyAny.(crypto.Signer)
 
-		impl := acmesigner.NewImpl(kc, accountKey, []string{"mailto:taahm@google.com"}, []string{"acme-test.row-major.net"})
+		impl := acmesigner.NewImpl(clock.RealClock{}, kc, accountKey, []string{"mailto:taahm@google.com"}, []string{"acme-test.row-major.net"})
 		controller := signercontroller.New(clock.RealClock{}, impl, kc, hasher)
 
 		if err := impl.Register(ctx); err != nil {

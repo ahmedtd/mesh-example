@@ -15,6 +15,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 )
 
 const Name = "row-major.net/service-dns"
@@ -24,12 +26,15 @@ const CTBPrefix = "row-major.net:service-dns:"
 type Impl struct {
 	kc     kubernetes.Interface
 	caPool *localca.Pool
+
+	clock clock.PassiveClock
 }
 
-func NewImpl(kc kubernetes.Interface, caPool *localca.Pool) *Impl {
+func NewImpl(kc kubernetes.Interface, caPool *localca.Pool, clock clock.PassiveClock) *Impl {
 	return &Impl{
 		kc:     kc,
 		caPool: caPool,
+		clock:  clock,
 	}
 }
 
@@ -69,11 +74,7 @@ func (h *Impl) DesiredClusterTrustBundles() []*certsv1beta1.ClusterTrustBundle {
 	}
 }
 
-func (h *Impl) CAPool() *localca.Pool {
-	return h.caPool
-}
-
-func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1beta1.PodCertificateRequest) ([]*x509.Certificate, error) {
+func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateRequest) error {
 	// TODO: Switch from live reads to indexer
 
 	// If our signer had a policy about which pods are allowed to request
@@ -81,7 +82,7 @@ func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr 
 
 	svcs, err := h.kc.CoreV1().Services(pcr.ObjectMeta.Namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("while listing services: %w", err)
+		return fmt.Errorf("while listing services: %w", err)
 	}
 
 	// TODO: Looping over every service isn't great.  Maintain an index of pod
@@ -102,7 +103,7 @@ func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr 
 			LabelSelector: metav1.FormatLabelSelector(&metav1.LabelSelector{MatchLabels: svc.Spec.Selector}),
 		})
 		if err != nil {
-			return nil, fmt.Errorf("while selecting pods for service %q: %w", pcr.ObjectMeta.Namespace+"/"+svc.ObjectMeta.Name, err)
+			return fmt.Errorf("while selecting pods for service %q: %w", pcr.ObjectMeta.Namespace+"/"+svc.ObjectMeta.Name, err)
 		}
 
 		for _, matchedPod := range matchedPods.Items {
@@ -123,12 +124,22 @@ func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr 
 
 	pkcs10Req, err := x509.ParseCertificateRequest(pcr.Spec.UnverifiedPKCS10Request)
 	if err != nil {
-		return nil, fmt.Errorf("while parsing PKCS#10 request: %w", err)
+		return fmt.Errorf("while parsing PKCS#10 request: %w", err)
 	}
 
 	// If our signer had an opinion on which key types were allowable, it would
 	// check subjectPublicKey, and deny the PCR with a SuggestedKeyType
 	// condition on it.
+
+	lifetime := 24 * time.Hour
+	requestedLifetime := time.Duration(*pcr.Spec.MaxExpirationSeconds) * time.Second
+	if requestedLifetime < lifetime {
+		lifetime = requestedLifetime
+	}
+
+	notBefore := h.clock.Now().Add(-2 * time.Minute)
+	notAfter := notBefore.Add(lifetime)
+	beginRefreshAt := notAfter.Add(-30 * time.Minute)
 
 	template := &x509.Certificate{
 		BasicConstraintsValid: true,
@@ -141,16 +152,44 @@ func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr 
 
 	subjectCertDER, err := x509.CreateCertificate(rand.Reader, template, h.caPool.CAs[0].RootCertificate, pkcs10Req.PublicKey, h.caPool.CAs[0].SigningKey)
 	if err != nil {
-		return nil, fmt.Errorf("while signing subject cert: %w", err)
+		return fmt.Errorf("while signing subject cert: %w", err)
 	}
 
-	leafCert, err := x509.ParseCertificate(subjectCertDER)
+	chainDER := [][]byte{subjectCertDER}
+	for _, intermed := range h.caPool.CAs[0].IntermediateCertificates {
+		chainDER = append(chainDER, intermed.Raw)
+	}
+
+	chainPEM := &bytes.Buffer{}
+	for _, certDER := range chainDER {
+		err = pem.Encode(chainPEM, &pem.Block{
+			Type:  "CERTIFICATE",
+			Bytes: certDER,
+		})
+		if err != nil {
+			return fmt.Errorf("while encoding certificate to PEM: %w", err)
+		}
+	}
+
+	pcr = pcr.DeepCopy()
+	pcr.Status.Conditions = []metav1.Condition{
+		{
+			Type:               certsv1beta1.PodCertificateRequestConditionTypeIssued,
+			Status:             metav1.ConditionTrue,
+			Reason:             "Reason",
+			Message:            "Issued",
+			LastTransitionTime: metav1.NewTime(h.clock.Now()),
+		},
+	}
+	pcr.Status.CertificateChain = chainPEM.String()
+	pcr.Status.NotBefore = ptr.To(metav1.NewTime(notBefore))
+	pcr.Status.BeginRefreshAt = ptr.To(metav1.NewTime(beginRefreshAt))
+	pcr.Status.NotAfter = ptr.To(metav1.NewTime(notAfter))
+
+	_, err = h.kc.CertificatesV1beta1().PodCertificateRequests(pcr.ObjectMeta.Namespace).UpdateStatus(ctx, pcr, metav1.UpdateOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("while parsing leaf cert: %w", err)
+		return fmt.Errorf("while updating PodCertificateRequest: %w", err)
 	}
 
-	ret := []*x509.Certificate{leafCert}
-	ret = append(ret, h.caPool.CAs[0].IntermediateCertificates...)
-
-	return ret, nil
+	return nil
 }

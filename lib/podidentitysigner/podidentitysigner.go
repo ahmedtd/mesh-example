@@ -3,10 +3,8 @@ package podidentitysigner
 import (
 	"bytes"
 	"context"
-	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"time"
 
 	"github.com/ahmedtd/mesh-example/lib/localca"
 	"github.com/ahmedtd/mesh-example/lib/signercontroller"
@@ -58,12 +56,7 @@ func (h *Impl) DesiredClusterTrustBundles() []*certsv1beta1.ClusterTrustBundle {
 	}
 }
 
-func (h *Impl) CAPool() *localca.Pool {
-	return h.caPool
-}
-
-func (h *Impl) MakeCert(ctx context.Context, notBefore, notAfter time.Time, pcr *certsv1beta1.PodCertificateRequest) ([]*x509.Certificate, error) {
+func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateRequest) error {
 	// TODO: Put a PodIdentity extension in the cert.
-
-	return nil, fmt.Errorf("unimplemented")
+	return fmt.Errorf("unimplemented")
 }

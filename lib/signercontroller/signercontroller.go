@@ -1,10 +1,7 @@
 package signercontroller
 
 import (
-	"bytes"
 	"context"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,13 +19,12 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/clock"
-	"k8s.io/utils/ptr"
 )
 
 type SignerImpl interface {
 	SignerName() string
 	DesiredClusterTrustBundles() []*certsv1beta1.ClusterTrustBundle
-	MakeCert(context.Context, time.Time, time.Time, *certsv1beta1.PodCertificateRequest) ([]*x509.Certificate, error)
+	MakeCert(context.Context, *certsv1beta1.PodCertificateRequest) error
 }
 
 type Hasher interface {
@@ -115,8 +111,6 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 	}
 	defer c.pcrQueue.Done(key)
 
-	slog.InfoContext(ctx, "Processing PCR", slog.String("key", key))
-
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		slog.ErrorContext(ctx, "Error splitting key into namespace and name",
@@ -140,9 +134,6 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 
 	err = c.handlePCR(ctx, pcr)
 	if errors.Is(err, rendezvous.ErrNotAssigned) {
-		slog.InfoContext(ctx, "Ignoring PCR because it is not assigned to this replica",
-			slog.String("key", key),
-		)
 		c.pcrQueue.AddRateLimited(key)
 		return true
 	}
@@ -178,51 +169,11 @@ func (c *Controller) handlePCR(ctx context.Context, pcr *certsv1beta1.PodCertifi
 		return rendezvous.ErrNotAssigned
 	}
 
-	lifetime := 24 * time.Hour
-	requestedLifetime := time.Duration(*pcr.Spec.MaxExpirationSeconds) * time.Second
-	if requestedLifetime < lifetime {
-		lifetime = requestedLifetime
-	}
+	slog.InfoContext(ctx, "Processing PCR", slog.String("key", pcr.ObjectMeta.Namespace+"/"+pcr.ObjectMeta.Name))
 
-	notBefore := c.clock.Now().Add(-2 * time.Minute)
-	notAfter := notBefore.Add(lifetime)
-	beginRefreshAt := notAfter.Add(-30 * time.Minute)
-
-	chain, err := c.handler.MakeCert(ctx, notBefore, notAfter, pcr)
+	err := c.handler.MakeCert(ctx, pcr)
 	if err != nil {
 		return fmt.Errorf("while converting PodCertificateRequest to x509.Certificate chain: %w", err)
-	}
-
-	chainPEM := &bytes.Buffer{}
-	for _, cert := range chain {
-		err = pem.Encode(chainPEM, &pem.Block{
-			Type:  "CERTIFICATE",
-			Bytes: cert.Raw,
-		})
-		if err != nil {
-			return fmt.Errorf("while encoding certificate to PEM: %w", err)
-		}
-	}
-
-	// Don't modify the copy in the informer cache.
-	pcr = pcr.DeepCopy()
-	pcr.Status.Conditions = []metav1.Condition{
-		{
-			Type:               certsv1beta1.PodCertificateRequestConditionTypeIssued,
-			Status:             metav1.ConditionTrue,
-			Reason:             "Reason",
-			Message:            "Issued",
-			LastTransitionTime: metav1.NewTime(c.clock.Now()),
-		},
-	}
-	pcr.Status.CertificateChain = chainPEM.String()
-	pcr.Status.NotBefore = ptr.To(metav1.NewTime(notBefore))
-	pcr.Status.BeginRefreshAt = ptr.To(metav1.NewTime(beginRefreshAt))
-	pcr.Status.NotAfter = ptr.To(metav1.NewTime(notAfter))
-
-	_, err = c.kc.CertificatesV1beta1().PodCertificateRequests(pcr.ObjectMeta.Namespace).UpdateStatus(ctx, pcr, metav1.UpdateOptions{})
-	if err != nil {
-		return fmt.Errorf("while updating PodCertificateRequest: %w", err)
 	}
 
 	return nil
