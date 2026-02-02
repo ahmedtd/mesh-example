@@ -133,6 +133,8 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 				return fmt.Errorf("while fetching authorization: %w", err)
 			}
 
+			slog.InfoContext(ctx, "Dump authorization", slog.Any("authorization", authz))
+
 			if authz.Status != acme.StatusPending {
 				slog.InfoContext(ctx, "Authorization is not pending", slog.String("authorization", authzURL))
 				continue
@@ -234,9 +236,9 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 			return fmt.Errorf("while updating PodCertificateRequest: %w", err)
 		}
 
+		// We are
 		return nil
 	} else if order.Status == acme.StatusInvalid {
-
 		pcrCopy := pcr.DeepCopy()
 		pcrCopy.Status.Conditions = append(pcr.Status.Conditions, metav1.Condition{
 			Type:               certsv1beta1.PodCertificateRequestConditionTypeFailed,
@@ -251,7 +253,7 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 		}
 
 		// We are done with this PCR.
-		return fmt.Errorf("PodCertificateRequest moved to failed state")
+		return nil
 	} else {
 
 		return fmt.Errorf("order in unhandled status: %v", order.Status)
