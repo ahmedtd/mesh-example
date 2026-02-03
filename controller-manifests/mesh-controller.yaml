@@ -138,8 +138,6 @@ spec:
         - --enable-spiffe-signer=true
         - --spiffe-trust-domain=cluster.local
         - --spiffe-ca-pool=/run/ca-state/spiffe-pool.json
-        - --enable-acme-signer=true
-        - --acme-account-key=/run/acme-client/client-private-key.pkcs8
         env:
         - name: POD_NAMESPACE
           valueFrom:
