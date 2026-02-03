@@ -3,6 +3,7 @@ package spiffesigner
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
@@ -105,12 +106,30 @@ func (h *Impl) MakeCert(ctx context.Context, pcr *certsv1beta1.PodCertificateReq
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 	}
 
-	pkcs10Req, err := x509.ParseCertificateRequest(pcr.Spec.UnverifiedPKCS10Request)
-	if err != nil {
-		return fmt.Errorf("while parsing PKCS#10 request: %w", err)
+	// In Kubernetes 1.35, Kubelet sets PKIXPublicKey.  In 1.36, Kubelet sets
+	// UnverifiedPKCS10Request.
+	var subjectPublicKey crypto.PublicKey
+	if pcr.Spec.UnverifiedPKCS10Request != nil {
+		pkcs10Req, err := x509.ParseCertificateRequest(pcr.Spec.UnverifiedPKCS10Request)
+		if err != nil {
+			return fmt.Errorf("while parsing PKCS#10 request: %w", err)
+		}
+		subjectPublicKey = pkcs10Req.PublicKey
+	} else {
+		var err error
+		subjectPublicKey, err = x509.ParsePKIXPublicKey(pcr.Spec.PKIXPublicKey)
+		if err != nil {
+			return fmt.Errorf("while parsing PKIX public key: %w", err)
+		}
 	}
 
-	subjectCertDER, err := x509.CreateCertificate(rand.Reader, template, h.caPool.CAs[0].RootCertificate, pkcs10Req.PublicKey, h.caPool.CAs[0].SigningKey)
+	subjectCertDER, err := x509.CreateCertificate(
+		rand.Reader,
+		template,
+		h.caPool.CAs[0].RootCertificate,
+		subjectPublicKey,
+		h.caPool.CAs[0].SigningKey,
+	)
 	if err != nil {
 		return fmt.Errorf("while signing subject cert: %w", err)
 	}
