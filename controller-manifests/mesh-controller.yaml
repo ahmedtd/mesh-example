@@ -124,7 +124,7 @@ spec:
     spec:
       containers:
       - name: controller
-        image: ghcr.io/ahmedtd/meshtool:latest
+        image: ghcr.io/ahmedtd/meshtool:0.0.2@sha256:19fdc24fe2eff6896f03f61885da535a66b20bf60b721a50ff44b9278f87a52e
         command:
         - /meshtool
         - controller
