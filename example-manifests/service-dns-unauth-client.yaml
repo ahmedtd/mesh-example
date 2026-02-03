@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
       - name: server
-        image: ghcr.io/ahmedtd/meshtool:0.0.2@sha256:19fdc24fe2eff6896f03f61885da535a66b20bf60b721a50ff44b9278f87a52e
+        image: ghcr.io/ahmedtd/meshtool:0.0.3@sha256:6da2878cb7070ba319eec5902d28084e6a61cc2f9975b9819e0a189e5a168f43
         command:
         - /meshtool
         - demo-server
@@ -84,7 +84,7 @@ spec:
       restartPolicy: Always
       containers:
       - name: client
-        image: ghcr.io/ahmedtd/meshtool:0.0.2@sha256:19fdc24fe2eff6896f03f61885da535a66b20bf60b721a50ff44b9278f87a52e
+        image: ghcr.io/ahmedtd/meshtool:0.0.3@sha256:6da2878cb7070ba319eec5902d28084e6a61cc2f9975b9819e0a189e5a168f43
         command:
         - /meshtool
         - https-client
