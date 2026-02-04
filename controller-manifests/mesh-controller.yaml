@@ -154,8 +154,6 @@ spec:
         volumeMounts:
         - name: "ca-state"
           mountPath: "/run/ca-state"
-        - name: "acme-client"
-          mountPath: "/run/acme-client"
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
@@ -179,14 +177,6 @@ spec:
               items:
               - key: "pool"
                 path: "spiffe-pool.json"
-      - name: "acme-client"
-        projected:
-          sources:
-          - secret:
-              name: "acme-client-key"
-              items:
-              - key: "client-private-key.pkcs8"
-                path: "client-private-key.pkcs8"
       dnsPolicy: Default
       nodeSelector:
         kubernetes.io/os: linux
