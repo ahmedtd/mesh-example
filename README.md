@@ -8,16 +8,39 @@ clusters.
 
 ## Getting Started (Kind)
 
-Pod Certificates and Cluster Trust Bundles are not enabled by default, so the
-easiest way to test them out is to create a local test cluster using
-[Kind](https://kind.sigs.k8s.io/).  This guide is written assuming that you are using Kind 0.31.0.
+### Cluster Setup
 
-`kind/kind-config.yaml` is a cluster configuration that enables all the necessary flags to use Pod Certificates and Cluster Trust Bundles.
+Pod Certificates and Cluster Trust Bundles are not enabled by default, so you
+will need to enable them.  This is different for each platform you may be
+running on.
+
+The controllers in this repository expect to be able to use the Pod Certificates
+v1beta1 API, so they require a cluster version >= 1.35.0.
+
+#### Kind
+
+The easiest way to test them out is to create a local test cluster using
+[Kind](https://kind.sigs.k8s.io/).  This guide is written assuming that you are
+using Kind 0.31.0.
+
+`kind/kind-config.yaml` is a cluster configuration that enables all the
+necessary flags to use Pod Certificates and Cluster Trust Bundles.
 ```
 kind create cluster --image=kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f --config=kind/kind-config.yaml
 ```
 
-The controllers in this repository expect to be able to use the Pod Certificates v1beta1 API, so they require a cluster version >= 1.35.0.
+#### GKE
+
+Create a GKE cluster with Pod Certificates, Cluster Trust Bundles, and Workload Identity enabled:
+```bash
+gcloud container clusters create podcerts \
+  --cluster-version=1.35 \
+  --location=us-west1 \
+  --enable-kubernetes-unstable-apis='certificates.k8s.io/v1beta1/podcertificaterequests,certificates.k8s.io/v1beta1/clustertrustbundles' \
+  --workload-pool=${PROJECT.SVC.ID.GOOG}
+```
+
+### Installation
 
 You can then deploy the signer controller:
 ```
